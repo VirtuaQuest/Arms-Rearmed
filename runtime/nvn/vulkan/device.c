@@ -1379,6 +1379,19 @@ int ui_run(void) {
             input_handle_event(&e);
         }
         menu_apply_window_requests(window);
+        {   // startup shader preparation (shader_prep.c): its progress in the window title
+            extern _Atomic int g_shader_prep_done, g_shader_prep_total;
+            static int shown = -2;
+            int total = atomic_load(&g_shader_prep_total), done = atomic_load(&g_shader_prep_done);
+            int pct = total > 0 ? done * 100 / total : total;
+            if (pct != shown) {
+                shown = pct;
+                char t[96];
+                if (total > 0) snprintf(t, sizeof t, "ARMS Recomp - preparing shaders %d%% (first start after an install or update)", pct);
+                else snprintf(t, sizeof t, "ARMS Recomp");
+                SDL_SetWindowTitle(window, t);
+            }
+        }
         input_rumble_poll();
         input_led_poll();
     }

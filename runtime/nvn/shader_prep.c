@@ -610,6 +610,9 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     if (progress) progress(0, total + 1);
     if (!idx_n) {
         idx_dir(romfs, 0);
+        char shaders[1100];  // (ARMS: its shader archives, unpacked at extraction - tools/nsp_extract.py)
+        snprintf(shaders, sizeof shaders, "%s/../shaders", romfs);
+        idx_dir(shaders, 0);
         char main_nso[1100];  // (<game files>/exefs/main, next to romfs/)
         snprintf(main_nso, sizeof main_nso, "%s/../exefs/main", romfs);
         idx_nso(main_nso);
@@ -675,8 +678,15 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     return true;
 }
 
+// The preparation's progress for the window title (runtime/nvn/vulkan/device.c's UI loop shows it): done, total
+_Atomic int g_shader_prep_done, g_shader_prep_total;
+static void boot_progress(int done, int total) {
+    atomic_store(&g_shader_prep_total, total);
+    atomic_store(&g_shader_prep_done, done);
+}
 void shader_prep_boot(const char *romfs) {
     const char *e = getenv("LARECOMP_SHADER_PREP");  // (on by default: no start screen runs it here; =0 off)
     if (e && !atoi(e)) return;
-    shader_prep_run(romfs, NULL, NULL);
+    shader_prep_run(romfs, boot_progress, NULL);
+    atomic_store(&g_shader_prep_total, -1);  // (done: the title goes back)
 }

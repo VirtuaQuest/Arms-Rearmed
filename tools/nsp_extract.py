@@ -309,6 +309,78 @@ def open_nsp(path, keys):
     return ncas
 
 
+def yaz0_decompress(d):
+    n = struct.unpack_from('>I', d, 4)[0]
+    out = bytearray(n)
+    i, o = 16, 0
+    while o < n:
+        code = d[i]
+        i += 1
+        for b in range(8):
+            if o >= n:
+                break
+            if code & (0x80 >> b):
+                out[o] = d[i]
+                i += 1
+                o += 1
+            else:
+                b1, b2 = d[i], d[i + 1]
+                i += 2
+                dist = ((b1 & 15) << 8 | b2) + 1
+                ln = b1 >> 4
+                if ln == 0:
+                    ln = d[i] + 0x12
+                    i += 1
+                else:
+                    ln += 2
+                src = o - dist
+                if dist >= ln:
+                    out[o:o + ln] = out[src:src + ln]
+                    o += ln
+                else:
+                    for k in range(ln):
+                        out[o] = out[src + k]
+                        o += 1
+    return bytes(out)
+
+
+def sarc_files(d):
+    hl = struct.unpack_from('<H', d, 4)[0]
+    doff = struct.unpack_from('<I', d, 0xc)[0]
+    n = struct.unpack_from('<H', d, hl + 6)[0]
+    names = hl + 12 + n * 16 + 8
+    for k in range(n):
+        attr, s, e = struct.unpack_from('<4xIII', d, hl + 12 + k * 16)
+        no = names + (attr & 0xffffff) * 4
+        yield d[no:d.index(b'\0', no)].decode(), d[doff + s:doff + e]
+
+
+def extract_shaders(romfs, files, outdir):
+    """The game's shader code (BNSH containers) into extracted/shaders, where the runtime's shader preparation finds
+    it to build the pipelines before play: in ARMS it sits in Yaz0-compressed SARC archives - the shader archives
+    (Shader/), the UI layouts (Layout/), the effects (Effect/). Each archive member holding BNSH data is written out as
+    <archive>.<member>.bfsha (the extension the runtime's index reads)."""
+    n = 0
+    for path, off, size in files:
+        p = path.lstrip('/')
+        if p.split('/')[0] not in ('Shader', 'Layout', 'Effect', 'System') or size > 64 << 20:
+            continue
+        raw = romfs.read(romfs.data_off + off, size)
+        d = yaz0_decompress(raw) if raw[:4] == b'Yaz0' else raw
+        if b'BNSH\0\0\0\0' not in d:
+            continue
+        members = list(sarc_files(d)) if d[:4] == b'SARC' else [('data', d)]
+        for name, body in members:
+            if b'BNSH\0\0\0\0' not in body:
+                continue
+            os.makedirs(outdir, exist_ok=True)
+            out = os.path.basename(p) + '.' + os.path.basename(name).replace('/', '_') + '.bfsha'
+            with open(os.path.join(outdir, out), 'wb') as f:
+                f.write(body)
+            n += 1
+    print(f' shaders: {n} files with shader code unpacked into {outdir}')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('nsp', help='the base game: an .nsp or an .xci')
@@ -348,6 +420,7 @@ def main():
             copy_out(romfs.read, romfs.data_off + off, size, os.path.join(a.outdir, 'romfs', path.lstrip('/')))
             if a.romfs != 'extract':
                 print(f'  {path} {size:,}')
+    extract_shaders(romfs, files, os.path.join(a.outdir, 'shaders'))
     print(' control:')
     extract_romfs((upd or base)['control'].sections[0], os.path.join(a.outdir, 'control'), verbose=True)
     for path, ncas in dlcs:  # (as a RomFS image, served as it is: MUA3's pass holds one empty file, named by a

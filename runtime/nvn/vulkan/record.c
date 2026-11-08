@@ -83,7 +83,9 @@ static int wait_pipes = -1;
 
 bool rec_on(void) { return on > 0; }
 bool rec_wait_pipes(void) {
-    if (wait_pipes < 0) wait_pipes = getenv("LARECOMP_VK_RECORDER_WAIT_PIPES") && atoi(getenv("LARECOMP_VK_RECORDER_WAIT_PIPES")) != 0;
+    // (on by default: a draw whose pipeline is still building waits for it instead of being left out - models
+    // appeared a moment late; the builds still run in parallel. LARECOMP_VK_RECORDER_WAIT_PIPES=0: skip as before)
+    if (wait_pipes < 0) wait_pipes = !getenv("LARECOMP_VK_RECORDER_WAIT_PIPES") || atoi(getenv("LARECOMP_VK_RECORDER_WAIT_PIPES")) != 0;
     return wait_pipes;
 }
 void rec_set_pipe_resolver(RecPipeResolve f) { pipe_resolve = f; }

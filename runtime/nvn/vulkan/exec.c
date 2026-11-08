@@ -5886,6 +5886,18 @@ static bool gs_cull_replay(CmdRec *r, bool indexed) {
     return true;
 }
 
+// A program still being translated / compiled: the draw waits for it (at most PROG_WAIT_MS) instead of being left
+// out, so a model never shows up a moment after it should (the other builds go on in parallel meanwhile).
+// LARECOMP_SKIP_BUILDING=1: left out, as before.
+#define PROG_WAIT_MS 3000
+static void prog_wait(Prog *pr) {
+    static int skip = -1;
+    if (skip < 0) skip = getenv("LARECOMP_SKIP_BUILDING") != NULL;
+    if (!pr || skip || atomic_load(&pr->state) != 0) return;
+    uint64_t t0 = SDL_GetTicksNS();
+    while (atomic_load(&pr->state) == 0 && SDL_GetTicksNS() - t0 < PROG_WAIT_MS * 1000000ull) SDL_DelayNS(100000);
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
     if (!st.program) { SKIP(SK_NO_PROGRAM); return; }
@@ -5897,6 +5909,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
+    prog_wait(pr);
     if (!pr || atomic_load(&pr->state) != 1) { SKIP(!pr ? SK_NO_STAGES : atomic_load(&pr->state) == 2 ? SK_PROG_FAILED : SK_PROG_BUILDING); return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
@@ -5914,6 +5927,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
+            prog_wait(pr);
             if (!pr || atomic_load(&pr->state) != 1) { SKIP(!pr ? SK_NO_STAGES : atomic_load(&pr->state) == 2 ? SK_PROG_FAILED : SK_PROG_BUILDING); return; }
             g_mirror_w = (float)st.rt.color[0]->width;
         }

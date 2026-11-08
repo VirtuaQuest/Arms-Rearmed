@@ -252,7 +252,7 @@ static void refresh_status(void) {
 
 // ================================================================== the step runner (child processes, a log)
 enum { ST_WAIT, ST_RUN, ST_OK, ST_FAIL, ST_SKIP };
-struct Step { std::string title, cmd, cwd; bool msys; int state = ST_WAIT; double secs = 0; };
+struct Step { std::string title, cmd, cwd; bool msys; bool game = false; int state = ST_WAIT; double secs = 0; };
 static std::vector<Step> g_steps;
 static std::mutex g_log_mu;
 static std::vector<std::string> g_log;
@@ -290,9 +290,22 @@ static int run_process(const Step &st) {
         std::string p = std::string(p_msys) + "\\ucrt64\\bin;" + p_msys + "\\usr\\bin;" + path_saved;
         SetEnvironmentVariableA("PATH", p.c_str());
     }
+    if (st.game) {  // (the game itself, headless: it builds the shader caches and quits - runtime/nvn/objects.c)
+        SetEnvironmentVariableA("LARECOMP_PREP_ONLY", "1");
+        SetEnvironmentVariableA("LARECOMP_HIDDEN", "1");
+        SetEnvironmentVariableA("LARECOMP_DATA_ROOT", g_root.c_str());
+        char *old = getenv("PATH");
+        path_saved = old ? old : "";
+        std::string p = g_root + "build;" + std::string(p_msys) + "\\ucrt64\\bin;" + path_saved;
+        SetEnvironmentVariableA("PATH", p.c_str());
+    }
     BOOL ok = CreateProcessA(NULL, cmd.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL,
                              st.cwd.c_str(), &si, &pi);
-    if (st.msys) SetEnvironmentVariableA("PATH", path_saved.c_str());
+    if (st.msys || st.game) SetEnvironmentVariableA("PATH", path_saved.c_str());
+    if (st.game) {
+        SetEnvironmentVariableA("LARECOMP_PREP_ONLY", NULL);
+        SetEnvironmentVariableA("LARECOMP_HIDDEN", NULL);
+    }
     CloseHandle(wr);
     if (!ok) {
         log_line("Could not start: " + cmd + " (Windows error " + std::to_string(GetLastError()) + ")");
@@ -375,6 +388,10 @@ static void start_steps(bool extract, bool recompile, bool build) {
         int n = SDL_GetNumLogicalCPUCores();
         g_steps.push_back({"Build the PC version", make + " -j" + std::to_string(n > 0 ? n : 8) +
                                                     " PY=.venv/Scripts/python.exe build/armsrecomp.exe build/armsgame.dll build/.dlls", g_root, true});
+        // the game's shaders built into the caches now, so the first start doesn't build them in play
+        Step prep = {"Prepare the shaders", q(g_root + "build\\armsrecomp.exe") + " extracted", g_root, false};
+        prep.game = true;
+        g_steps.push_back(prep);
     }
     {
         std::lock_guard<std::mutex> lk(g_log_mu);
@@ -651,7 +668,7 @@ static void page_setup(SDL_Window *win) {
     }
     ImGui::SameLine();
     if (big_button("##rebuild", "REBUILD", ImVec2(bw, 58 * g_scale), C_CYAN, C_BLACK, can && g_status.extracted))
-        start_steps(false, true, true);
+        start_steps(!is_dir(g_root + "extracted\\shaders") && p_base[0] && p_keys[0], true, true);
     ImGui::SameLine();
     if (big_button("##cancel", "CANCEL", ImVec2(bw, 58 * g_scale), C_PINK, C_WHITE, g_running)) cancel_steps();
     hint("INSTALL: extract, recompile and build (about 10 minutes the first time). REBUILD: recompile and build again "

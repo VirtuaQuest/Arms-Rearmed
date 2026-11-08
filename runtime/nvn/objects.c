@@ -139,6 +139,13 @@ NVN(nvnDeviceInitialize) {
         backend_init();
         extern void shader_prep_boot(const char *romfs);
         shader_prep_boot(g_romfs_dir);  // (LARECOMP_SHADER_PREP=1, tests: what the start screen's setup does)
+        if (getenv("LARECOMP_PREP_ONLY")) {  // (the launcher's INSTALL: build the shader caches, then quit)
+            extern void vk_pipeline_cache_save(void);
+            vk_pipeline_cache_save();
+            LOG("[shader] LARECOMP_PREP_ONLY: caches written, exiting\n");
+            fflush(NULL);
+            _Exit(0);
+        }
     }
     LOG("[nvn] device initialized\n");
     RET(1);
