@@ -1,6 +1,6 @@
 # Changes
 
-## ARMS bring-up (2026-11-08)
+## ARMS bring-up (2026-11-08, first part)
 
 This repository started as a copy of MUA3 Recomp (mua3 branch of DOA-Xtreme-3-Recomp at 96e0db9, built on LAS Recomp)
 and is retargeted at **ARMS 5.4.0** (title 01009B500007C000, main build ID 501924B7C22129E5, NintendoSDK 4.4.3,
@@ -28,30 +28,81 @@ movie library (host code, `runtime/hle/movie.c`); there is no glslc module (`GLS
 - Names and ids: `armsrecomp.exe`, `armsgame.dll`, `armslauncher.exe`, program id, add-on base 0x01009B500007D000,
   the version table, the window title "ARMS Recomp".
 
-**Status:** boots through SDK/engine init, services, the save mount, the audio renderer and NVN device, compiles
-its first shaders and draws ~53 frames (26 fps), then rendering stops about 4.5 s in. Nothing has been seen on
-screen yet (no screenshot was taken before it stopped).
+**Status (end of 2026-11-08):** boots, runs the title screen, the attract-mode fights and the menus through to
+character select at a locked 60 fps on an RTX 3060 / i7-11700F, with keyboard, mouse and controller input; runs of
+2+ minutes end without a crash or stall. **The fighters are drawn black in fights and not at all at character select**
+(stages, effects, UI and movies are right): see "Open: the fighters" below.
 
-**Where it stopped (next step):** the replay's command counts show 30,000,448 records of op 23
-(`CMD_SET_BLEND_COLOR`) in the first 4.5 s: a command list walk looping (the 10,000,000 guard in `exec_list` /
-`prescan`, three times), so a list's records are corrupt or form a cycle. Suspect the overflow above:
-- `nvnCommandBufferGetCommandMemoryFree` returns 0 while in overflow, which may make the game add chunks mid-recording;
-  if it adds back a chunk the open list still uses, new records overwrite it and jumps can cycle. Try reporting the
-  overflow block's real free space instead, and check `LARECOMP_LOG_CMDMEM` for adds with `recording 1`.
-- The first log showed one command buffer (723b580c10) given the same chunk 72696b4100+0x800 over and over with
-  recording 0 (it resets the buffer each time: fine by itself).
-- Add a check in `exec_list`/`prescan` for `r->size < sizeof(CmdRec)` or `op >= CMD_COUNT` that logs the handle and
-  stops, so a bad list can't hang the renderer.
+## Getting it stable (2026-11-08, second part)
 
-**Also seen, not handled yet:** `MemoryPoolMapVirtual` (virtual pools not modelled), `AddControlMemory`,
-`SetShaderScratchMemory`, `SetDepthClamp`, `SetTiledCacheAction/TileSize` not implemented; `prepo:u` is a logging stub.
+Each of these was found with the tools listed after it, in this order; each fix moved the first failure further on.
 
-**Planned (the original request):** a launcher that picks the base game (XCI/NSP), update and keys, runs the extraction,
-recompile and build, and offers resolution, window mode, frame rate and other graphics options, styled in an original
-bright look (no game art or fonts). Controllers through SDL 3 (already there), plus keyboard and mouse: WASD move,
-left/right click left/right punch, both or middle click grab, Space jump, Shift dash, Ctrl guard (left stick click),
-E rush, Tab change target. Check the in-game controls screen first: sources disagree on rush (L or R).
-ARMS runs at 60 fps natively, so higher rates need its time step found first.
+- **Command lists overwritten after recording** (the "30 million SET_BLEND_COLOR records" loop of the first part).
+  ARMS hands out command memory from per-frame arenas (several command buffers share one arena; temporary ones are
+  given the same 2 KB chunk over and over) and places each new chunk at the old one's start + GetCommandMemoryUsed.
+  Our records are several times NVN's encoding, so lists ran past what the game thought they used and the next lists
+  overwrote them (CallCommands targets changed, render targets became garbage pointers, cycles).
+  `runtime/nvn/cmdbuf.c` now keeps all records in host memory: each guest chunk gets host blocks (CmdChunk); the game
+  is told an estimate of NVN's own usage (16 bytes + inline data per command); a chunk retires when a chunk is added
+  at the same start or another buffer's estimated writes reach its start, then waits in a 6-frame quarantine before
+  its blocks are reused (the estimate is only an estimate, and the render thread runs behind).
+  `LARECOMP_CHECK_LISTS=1` hashes every list at EndRecording and checks it at submit / Call / Copy (and logs which
+  chunk retirement hit it). Found with it.
+- **CopyCommands** copies the records (it recorded a call to lists the game reuses right after copying).
+- **Virtual memory pools** (`objects.c` MapVirtual): a 96 MB compressible render-target pool is mapped whole into a
+  virtual pool; pool offsets resolve through the mappings (textures there had their offset as their address: crash).
+- **NVN objects copied by value.** ARMS copies NVNtexture / NVNsampler objects and finalizes copies, sometimes only
+  the temporary it initialized. Host heap corruption (0xC0000374; found with full page heap: IFEO GlobalFlag
+  0x02000000) came from double frees and reads after free. Now: samplers are interned; a live-object registry
+  (`nvn_live_*`) makes a second Finalize harmless and rejects stale pointers (`nvn_texture_of`); texture Finalize only
+  marks, and `nvn_texture_gc` destroys a finalized texture once no guest object has named it for 120 presents and no
+  pool slot holds it; programs and syncs are kept.
+- **Sampler exhaustion → device lost.** Every sampler-pool registration created a VkSampler (ARMS registers every
+  frame): NVIDIA's 4000 ran out after ~27 s (Vulkan validation found it; the layer must be registered in
+  `HKLM\SOFTWARE\Khronos\Vulkan\ExplicitLayers` when running elevated). One VkSampler per distinct state now, and
+  registrations never take a "backend" pointer from builder memory (garbage handles in vkUpdateDescriptorSets).
+- **Movie library of the older SDK:** the 3-argument `movie::Decoder` constructor and `MediaData::FindInt64` were
+  missing; the attract movie stopped the thread that called them (the game waited forever at ~27 s).
+- **Core exclusion** (`kernel.c`): with every guest thread running in parallel, ARMS's job code walked intrusive lists
+  while another thread changed them (null-node crashes in about half the runs, timing dependent). ARMS pins its
+  threads to cores (SetThreadCoreMask, now honoured and logged); on Horizon the threads of one core never run at once.
+  A pinned thread now holds its core's lock while running guest code and gives it up for kernel waits, sleeps, yields,
+  IPC and long host waits (present pacing, GPU fences); a higher-priority waiter preempts at the holder's next HLE or
+  kernel call, or runs beside it after 2 ms (a holder in a long computation); unpinned threads float. 4/4 scripted
+  runs and 2/2 attract runs were clean afterwards. `LARECOMP_CORES=0` turns it off, `LARECOMP_LOG_CORES=1` logs
+  holds over 20 ms.
+- **Input:** ARMS reads `nn::hid::GetNpadStates` (plural, a sample history): now HLE'd for every style, so input
+  reaches the game.
+- **Window crop** (`nvnWindowSetCrop`: ARMS's dynamic resolution renders into the top-left 1600x900 and presents that
+  part) is applied at present. (`LARECOMP_SHOT_AT` captures are the raw window texture, uncropped; the window is right.)
+- **Shader translator:** TLD4 (gather, depth compare; 2D, 2D array, cube, cube array).
+- **MUA3 / Link's Awakening leftovers:** `game_frame_rate` wrote MUA3 addresses (in ARMS's memory: other data) at
+  every present - now a no-op; the display runs at 60 Hz (ARMS presents every vsync and steps fights per frame, so
+  other rates would change its speed); the overlay menu keeps Controls, Video, Audio, Quit.
+- **Keyboard and mouse:** mouse buttons are bindable like keys; extra slots: second keys for A / B, Grab (A + B).
+  Defaults follow ARMS's own Pro Controller prompts (its tutorial messages: punch A / B, grab A + B, jump X, dash Y,
+  guard left stick press, rush L / R).
+- **Launcher** (`launcher/launcher.cpp`, rewritten): GAME FILES (pick the base game, update and keys; INSTALL runs the
+  Python environment, extraction, `make gen` and the build as child processes in a job object, with a live log),
+  PLAY, GRAPHICS (window mode / size, internal resolution, upscaler, SMAA, aspect, FPS counter, volume, rumble),
+  CONTROLS, ABOUT. Original look: drawn shapes, springs and halftone, Baloo 2 (OFL). Test hooks:
+  `ARMS_LAUNCHER_SHOT`, `ARMS_LAUNCHER_TAB`, `ARMS_LAUNCHER_INSTALL`, `ARMS_LAUNCHER_LOG`.
+
+## Open: the fighters
+
+In fights the fighters are black silhouettes; at character select the selected fighter isn't drawn at all. Findings:
+- Their draws are the MRT ones: colour (format 0x3f) + an R8 mask (0x1) + depth, fragment shaders such as
+  `e56d0feb636dd73d` (fs 726ca51000), `65f540cc458eb61d`, `90d0a91e7c318476` (`LARECOMP_LOG_FSHASH=2` maps hashes
+  to code addresses; `LARECOMP_SAVE_MSL=1 LARECOMP_SHADER_PREP=0 LARECOMP_VK_NO_SPIRV_CACHE=1` saves their GLSL).
+  They sample up to 12 textures, including a cube-map array (image-based lighting) and a 2D-array shadow map.
+- Not the cause: the shadow compare (`LARECOMP_NO_SHADOW=1` changes nothing), front-face winding (flipping it blacks
+  out everything), skipping those MRT shaders (the silhouettes stay: they come from another pass).
+- Not yet checked: the cube-map array's contents (a probe the game renders?), the R8 mask's use in the composite
+  (`ae216330c4409988`, which samples it), local memory / `SetShaderScratchMemory` (unimplemented) in those shaders.
+  A RenderDoc capture of one fight frame is the next step.
+
+**Also not handled yet:** `AddControlMemory`, `SetShaderScratchMemory`, `SetDepthClamp`, `SetTiledCacheAction/TileSize`
+are stubs; `prepo:u` is a logging stub; motion controls (six-axis) report nothing (button controls only).
 
 What this project changed relative to [LAS Recomp](https://github.com/peiikai/LASRecomp) (its recompiler and Switch
 runtime), why, and where. It also lists the debugging switches, the test routes, the known gaps and the next steps.

@@ -10,3 +10,4 @@ cache/
 larecomp.ini
 __pycache__/
 *.out
+launcher.ini
