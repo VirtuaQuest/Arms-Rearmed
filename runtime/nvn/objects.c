@@ -1046,7 +1046,14 @@ NVN(nvnWindowSetPresentInterval) {  // (the game's 60 / 30 fps mode: 1 / 2; LARE
     if (log && WIN->interval != (int)A(1)) LOG("[nvn] present interval %d -> %d\n", WIN->interval, (int)A(1));
     WIN->interval = (int)A(1);
 }
-NVN(nvnWindowSetCrop) { int *cr = WIN->crop; cr[0] = (int)A(1); cr[1] = (int)A(2); cr[2] = (int)A(3); cr[3] = (int)A(4); }
+NVN(nvnWindowSetCrop) {
+    int *cr = WIN->crop;
+    if (cr[0] != (int)A(1) || cr[1] != (int)A(2) || cr[2] != (int)A(3) || cr[3] != (int)A(4)) {
+        static int n;
+        if (n++ < 40) LOG("[nvn] window crop %d,%d %dx%d\n", (int)A(1), (int)A(2), (int)A(3), (int)A(4));
+    }
+    cr[0] = (int)A(1); cr[1] = (int)A(2); cr[2] = (int)A(3); cr[3] = (int)A(4);
+}
 NVN(nvnWindowGetCrop) { memcpy(AP(1), WIN->crop, 16); }
 NVN(nvnWindowAcquireTexture) {
     NvnWindow *w = WIN;

@@ -5924,6 +5924,18 @@ static void draw_(CmdRec *r, bool indexed) {
         if (fs != last_fs) {
             last_fs = fs;
             last_hash = fs ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fs + 0x30), 0x200) : 0;
+            static int map = -1;  // LARECOMP_LOG_FSHASH=2: each hash's code address, the first time (build/glsl names)
+            if (map < 0) map = getenv("LARECOMP_LOG_FSHASH") && atoi(getenv("LARECOMP_LOG_FSHASH")) == 2;
+            if (map) {
+                static uint64_t seen[2048];
+                static int nseen;
+                bool known = false;
+                for (int i = 0; i < nseen && !known; i++) known = seen[i] == last_hash;
+                if (!known && nseen < 2048) {
+                    seen[nseen++] = last_hash;
+                    LOG("[fshash] %016llx = fs %llx\n", (unsigned long long)last_hash, (unsigned long long)fs);
+                }
+            }
         }
         static uint64_t skip[16];
         static int nskip = -1;

@@ -22,14 +22,14 @@ const char *const g_screen_filters[N_SCREEN_FILTERS] = {"Off", "Game Boy", "Game
 static const char *const k_screen_filter_keys[N_SCREEN_FILTERS] = {"off", "gameboy", "gameboy_color", "grayscale"};  // (else: off)
 
 Settings g_settings = {
-    .aspect = ASPECT_UNLOCKED,
+    .aspect = ASPECT_ORIGINAL,  // (ARMS has no widescreen view: Unlocked stretches)
     .fullscreen = false,
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
     .rumble = true,
     .rumble_strength = 100,
-    .controller_light = true,
+    .controller_light = false,  // (it showed Link's health: nothing for ARMS)
     .menu_confirm = MENU_CONFIRM_CONTROLLER,
     .show_fps = false,
     .frame_rate = 30,

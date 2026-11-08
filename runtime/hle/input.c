@@ -177,13 +177,20 @@ static uint8_t test_keys[SDL_SCANCODE_COUNT];
 static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in LARECOMP_HOST_INPUT)
 
-static int held_key(int sc) { return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]); }
+static bool mouse_down[BIND_MOUSE_COUNT + 1];  // (SDL_BUTTON_LEFT..X2: the keyboard table's mouse buttons)
+static int held_key(int sc) {
+    if (bind_is_mouse(sc)) return mouse_down[sc - BIND_MOUSE_BASE];
+    return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]);
+}
 
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
 static void recompute_keyboard(void) {
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (held_key(g_bind_key[i])) b |= 1ull << i;
+    if (held_key(g_bind_key[BIND_ALT_A])) b |= 1ull << BIND_A;
+    if (held_key(g_bind_key[BIND_ALT_B])) b |= 1ull << BIND_B;
+    if (held_key(g_bind_key[BIND_GRAB])) b |= 1ull << BIND_A | 1ull << BIND_B;  // (ARMS: grab)
     key_buttons = b;
     key_lx = (held_key(g_bind_key[BIND_LS_RIGHT]) - held_key(g_bind_key[BIND_LS_LEFT])) * 32767;
     key_ly = (held_key(g_bind_key[BIND_LS_UP]) - held_key(g_bind_key[BIND_LS_DOWN])) * 32767;
@@ -419,6 +426,15 @@ void input_handle_event(const SDL_Event *e) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: {
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
+        uint64_t before = key_buttons;
+        recompute_keyboard();
+        uint64_t now = key_buttons;
+        note_press(now & ~before, before & ~now);
+        break;
+    }
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: {  // (bound like keys: bindings.c)
+        if (e->button.button < 1 || e->button.button > BIND_MOUSE_COUNT) break;
+        mouse_down[e->button.button] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         uint64_t before = key_buttons;
         recompute_keyboard();
         uint64_t now = key_buttons;

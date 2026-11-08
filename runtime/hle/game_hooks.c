@@ -26,6 +26,11 @@ bool game_frame_limiter_sleep(uint64_t lr) { return lr == 0x70008395b4ull; }  //
 // table's interval-1 step 1/120 s: then dt is the measured time at any frame rate up to the setting's. The limiter's
 // target rate becomes the setting's too.
 void game_frame_rate(int fps) {
+    // ARMS: nothing. The addresses below are MUA3's (its time step table, frame object and present interval); in
+    // ARMS's memory they are other data, and this ran at every present (it rewrote a 60.0f there to 30.0f). ARMS
+    // presents every vsync at 60 Hz and steps its fights once a frame (runtime/hle/vi.c).
+    (void)fps;
+    if (fps) return;
     uint64_t p = *(volatile uint64_t *)(uintptr_t)0x7002188a00ull;
     volatile float *step1 = (volatile float *)(uintptr_t)0x70019f33d8ull;
     float want = fps >= 120 ? 1.0f / 120 : 1.0f / 60;

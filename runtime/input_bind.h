@@ -20,9 +20,16 @@ enum {
     BIND_PAD_COUNT,                                      // controller: the 16 buttons (its sticks stay the sticks)
     BIND_LS_UP = BIND_PAD_COUNT, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT,
     BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT,
-    BIND_KEY_COUNT                                       // keyboard: buttons + both sticks
+    // keyboard / mouse extras (ARMS): second keys for A and B (menus by keyboard while the mouse buttons punch), and
+    // Grab: A and B together on one key
+    BIND_ALT_A, BIND_ALT_B, BIND_GRAB,
+    BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + the extras
 };
 enum { BIND_DEV_PAD, BIND_DEV_KEY };
+// Mouse buttons in the keyboard table (past SDL's scancodes): BIND_MOUSE_BASE + SDL_BUTTON_LEFT (1) .. X2 (5)
+#define BIND_MOUSE_BASE 600
+#define BIND_MOUSE_COUNT 5
+static inline bool bind_is_mouse(int code) { return code > BIND_MOUSE_BASE && code <= BIND_MOUSE_BASE + BIND_MOUSE_COUNT; }
 // Controller binding values: an SDL_GamepadButton, or the analog triggers as buttons
 enum { PADB_LTRIGGER = 26 /* SDL_GAMEPAD_BUTTON_COUNT */, PADB_RTRIGGER, PADB_HOST_COUNT };
 

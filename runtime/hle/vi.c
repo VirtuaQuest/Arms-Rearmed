@@ -24,8 +24,11 @@ int vi_frame_rate(void) {  // 30, 60 or 120: what the display period gives (two 
     return p <= 4200000 ? 120 : p <= 8400000 ? 60 : 30;
 }
 void vi_apply_fps(void) {
+    // ARMS presents every vsync (interval 1) and steps its fights once a frame: the display runs at 60 Hz whatever
+    // frame_rate says (MUA3's setting counted two vsyncs a frame; any other rate would change ARMS's game speed).
+    // (test) LARECOMP_FPS=<n>: the display at 2n Hz, as before.
     const char *e = getenv("LARECOMP_FPS");
-    int fps = e ? atoi(e) : g_settings.frame_rate;
+    int fps = e ? atoi(e) : 30;
     fps = fps >= 120 ? 120 : fps >= 60 ? 60 : 30;
     g_vsync_period = 500000000ull / (uint64_t)fps;
     const char *hz = getenv("LARECOMP_VSYNC_HZ");

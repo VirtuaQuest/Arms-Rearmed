@@ -263,11 +263,6 @@ extern "C" void controls_tab_draw(float scale) {
                    "permission."))
         input_apply_background();
 
-    opt_section("Movement");
-    opt_toggle("D-pad moves Link", &g_settings.dpad_move, false, "The d-pad moves Link like the control stick.");
-    opt_toggle("360-degree movement", &g_settings.move_360, false,
-               "Link walks in the exact direction of the stick instead of snapping to 8 directions.");
-
     opt_section("Controller");
     opt_toggle("Rumble", &g_settings.rumble, true, "Controller vibration.");
     if (g_settings.rumble) {
@@ -279,7 +274,6 @@ extern "C" void controls_tab_draw(float scale) {
             g_settings.rumble_strength = (i + 1) * 25;
         opt_indent(-1);
     }
-    opt_toggle("Controller light", &g_settings.controller_light, true, "The light bar shows Link's health.");
     {
         static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};
         char autol[64];

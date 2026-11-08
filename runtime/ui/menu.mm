@@ -410,23 +410,16 @@ static void tab_display(void) {
     opt_section("Display");
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
-               "Unlocked: the view fills the window, so wider (or taller) windows show more of the island - up to "
-               "ultrawide; houses and dungeons keep their framing. Original 16:9: the game's own framing, with bars.");
+               "Original 16:9: the game's own framing, with bars on wider or taller windows. Unlocked: the image is "
+               "stretched to fill the window.");
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
-    {
-        static const char *const rates[] = {"30", "60", "120"};
-        int ri = g_settings.frame_rate >= 120 ? 2 : g_settings.frame_rate >= 60 ? 1 : 0;
-        if (opt_choice("Frame rate", &ri, rates, 3, 0, "Frames per second. The game keeps time by the clock, so it "
-                       "plays at its normal speed at each; 30 is the original. Pick a lower one if your PC can't keep up.")) {
-            g_settings.frame_rate = ri == 2 ? 120 : ri == 1 ? 60 : 30;
-            vi_apply_fps();
-        }
-    }
+    // (no frame rate choice: ARMS runs at 60 fps and steps its fights once a frame, so another rate would change the
+    // game's speed - runtime/hle/vi.c)
 
     opt_section("Rendering");
     // display order -> RES_* (the ini / enum order predates the menu order)
@@ -750,8 +743,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     static const char *names[] = {"Video", "Audio", "Save Editor", "Randomizer", "Warp", "Cheats", "Gameplay",
                                   "Cosmetics", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
-                                                                // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
+    // ARMS: Controls, Video, Audio, Quit (the other pages were Link's Awakening's: save editor, randomizer, warp,
+    // cheats, gameplay, cosmetics; their ids stay for the test hooks)
+    static const int order[] = {8, 0, 1, 9};
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
     int cur = 0;  // g_tab / g_tab_request hold ids

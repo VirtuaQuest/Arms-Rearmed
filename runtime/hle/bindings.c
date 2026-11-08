@@ -10,31 +10,38 @@
 
 _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-buttons follow SDL's buttons");
 
-// Defaults: Nintendo layout by position (east = A, south = B, north = X, west = Y), triggers = ZL / ZR;
-// keyboard WASD left stick, arrows d-pad, K/J/L/I = A/B/X/Y, Q/E = L/R, 1/3 = ZL/ZR, Enter / Backspace = Plus /
-// Minus, F / numpad 0 = stick clicks, numpad 8/5/4/6 right stick.
+// Defaults: Nintendo layout by position (east = A, south = B, north = X, west = Y), triggers = ZL / ZR.
+// Keyboard and mouse, for ARMS's own button controls (its tutorial's Pro Controller prompts: A / B punch right /
+// left, A + B grab, X jump, Y dash, left stick press guard, L / R rush, the left stick moves and curves punches):
+// WASD move, right / left mouse = A / B (punch), middle mouse = A + B (grab; both buttons together grab too),
+// Space = X (jump), Left Shift = Y (dash), Left Ctrl = left stick press (guard), Q / E = L / R (rush), Z / C = ZL /
+// ZR, Tab / M = Plus / Minus, arrows d-pad, Enter / Backspace = A / B again (menus), V = right stick press,
+// numpad 8/5/4/6 right stick.
 #define DEF_PAD { \
     SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_NORTH, SDL_GAMEPAD_BUTTON_WEST, \
     SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, \
     SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, PADB_LTRIGGER, PADB_RTRIGGER, SDL_GAMEPAD_BUTTON_START, SDL_GAMEPAD_BUTTON_BACK, \
     SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_DOWN}
 #define DEF_KEY { \
-    SDL_SCANCODE_K, SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_I, SDL_SCANCODE_F, SDL_SCANCODE_KP_0, \
-    SDL_SCANCODE_Q, SDL_SCANCODE_E, SDL_SCANCODE_1, SDL_SCANCODE_3, SDL_SCANCODE_RETURN, SDL_SCANCODE_BACKSPACE, \
+    BIND_MOUSE_BASE + SDL_BUTTON_RIGHT, BIND_MOUSE_BASE + SDL_BUTTON_LEFT, SDL_SCANCODE_SPACE, SDL_SCANCODE_LSHIFT, \
+    SDL_SCANCODE_LCTRL, SDL_SCANCODE_V, \
+    SDL_SCANCODE_Q, SDL_SCANCODE_E, SDL_SCANCODE_Z, SDL_SCANCODE_C, SDL_SCANCODE_TAB, SDL_SCANCODE_M, \
     SDL_SCANCODE_LEFT, SDL_SCANCODE_UP, SDL_SCANCODE_RIGHT, SDL_SCANCODE_DOWN, \
     SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D, SDL_SCANCODE_KP_8, SDL_SCANCODE_KP_5, \
-    SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_6}
+    SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_6, \
+    SDL_SCANCODE_RETURN, SDL_SCANCODE_BACKSPACE, BIND_MOUSE_BASE + SDL_BUTTON_MIDDLE}
 static const int16_t k_def_pad[BIND_PAD_COUNT] = DEF_PAD, k_def_key[BIND_KEY_COUNT] = DEF_KEY;
 int16_t g_bind_pad[BIND_PAD_COUNT] = DEF_PAD, g_bind_key[BIND_KEY_COUNT] = DEF_KEY;
 
 static const char *const k_ini[BIND_KEY_COUNT] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down",
-    "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right",
+    "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right", "alt_a", "alt_b", "grab",
 };
 static const char *const k_names[BIND_KEY_COUNT] = {
     "A", "B", "X", "Y", "Left stick press", "Right stick press", "L", "R", "ZL", "ZR", "Plus", "Minus",
     "D-pad Left", "D-pad Up", "D-pad Right", "D-pad Down", "Left stick Up", "Left stick Down", "Left stick Left",
     "Left stick Right", "Right stick Up", "Right stick Down", "Right stick Left", "Right stick Right",
+    "A (second key)", "B (second key)", "Grab (A + B)",
 };
 // controller buttons by position (larecomp.ini)
 static const char *const k_pad_ini[PADB_HOST_COUNT] = {
@@ -75,7 +82,10 @@ const char *bind_pad_label(int host, int fam) {
     return fam == 1 ? xb[host] : fam == 2 ? ps[host] : nin[host];
 }
 
+static const char *const k_mouse_names[BIND_MOUSE_COUNT] = {"Left mouse", "Middle mouse", "Right mouse", "Mouse 4", "Mouse 5"};
+static const char *const k_mouse_ini[BIND_MOUSE_COUNT] = {"mouse_left", "mouse_middle", "mouse_right", "mouse_4", "mouse_5"};
 const char *bind_key_label(int sc) {
+    if (bind_is_mouse(sc)) return k_mouse_names[sc - BIND_MOUSE_BASE - 1];
     if (sc <= 0 || sc >= SDL_SCANCODE_COUNT) return "(none)";
     const char *n = SDL_GetScancodeName((SDL_Scancode)sc);
     return n && *n ? n : "(unnamed key)";
@@ -189,6 +199,11 @@ bool bind_capture_event(const SDL_Event *e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
         return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:  // (a keyboard capture takes mouse buttons too)
+        if (dev != BIND_DEV_KEY || e->button.button < 1 || e->button.button > BIND_MOUSE_COUNT) return false;
+        cap_dev = -1;
+        assign(dev, cap_slot, BIND_MOUSE_BASE + e->button.button);
+        return true;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
         if (dev == BIND_DEV_PAD && e->gaxis.value > 16000 &&
             (e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) {
@@ -211,6 +226,9 @@ bool bind_settings_load(const char *key, const char *val) {
             for (int h = 0; h < PADB_HOST_COUNT; h++)
                 if (!strcmp(val, k_pad_ini[h])) g_bind_pad[i] = (int16_t)h;
         } else {
+            int m = -1;
+            for (int k = 0; k < BIND_MOUSE_COUNT; k++) if (!strcmp(val, k_mouse_ini[k])) m = k;
+            if (m >= 0) { g_bind_key[i] = (int16_t)(BIND_MOUSE_BASE + 1 + m); continue; }
             SDL_Scancode sc = strcmp(val, "none") ? SDL_GetScancodeFromName(val) : SDL_SCANCODE_UNKNOWN;
             if (sc != SDL_SCANCODE_UNKNOWN || !strcmp(val, "none")) g_bind_key[i] = (int16_t)sc;
         }
@@ -224,5 +242,6 @@ void bind_settings_save(FILE *f) {
             fprintf(f, "bind_pad_%s = %s\n", k_ini[i], k_pad_ini[g_bind_pad[i]]);
     for (int i = 0; i < BIND_KEY_COUNT; i++)
         if (g_bind_key[i] != k_def_key[i])
-            fprintf(f, "bind_key_%s = %s\n", k_ini[i], g_bind_key[i] ? SDL_GetScancodeName((SDL_Scancode)g_bind_key[i]) : "none");
+            fprintf(f, "bind_key_%s = %s\n", k_ini[i], bind_is_mouse(g_bind_key[i]) ? k_mouse_ini[g_bind_key[i] - BIND_MOUSE_BASE - 1]
+                                                   : g_bind_key[i] ? SDL_GetScancodeName((SDL_Scancode)g_bind_key[i]) : "none");
 }
