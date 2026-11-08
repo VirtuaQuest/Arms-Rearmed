@@ -1,0 +1,11 @@
+# game files and anything derived from them: never commit
+extracted/
+generated/
+*.log
+.venv/
+build/
+save/
+save.route-backup/
+cache/
+larecomp.ini
+__pycache__/
