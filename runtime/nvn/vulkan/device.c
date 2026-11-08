@@ -253,7 +253,9 @@ static bool g_fault_ext;
 // After VK_ERROR_DEVICE_LOST: what the driver says faulted (VK_EXT_device_fault), into the log.
 void vk_device_fault_report(void) {
     static int once;
-    if (once++ || !g_fault_ext) return;
+    if (once++) return;
+    { extern void vk_devlost_dump(void); vk_devlost_dump(); }  // (LARECOMP_VK_DEVLOST_TRACE: the last GPU work)
+    if (!g_fault_ext) return;
     PFN_vkGetDeviceFaultInfoEXT get = (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetDeviceFaultInfoEXT");
     if (!get) return;
     VkDeviceFaultCountsEXT c = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
@@ -1031,6 +1033,15 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(frame, shape, crop, &vx, &vy, &vw, &vh);
+        // the game's own window crop (nvnWindowSetCrop): ARMS renders at a dynamic resolution into the top-left part
+        // of its 1920x1080 window textures and presents that part
+        if (t && t->width && t->height && t->present_crop[2] > 0 && t->present_crop[3] > 0 &&
+            (t->present_crop[2] < (int)t->width || t->present_crop[3] < (int)t->height || t->present_crop[0] || t->present_crop[1])) {
+            float cx = (float)t->present_crop[0] / t->width, cy = (float)t->present_crop[1] / t->height;
+            float cw = (float)t->present_crop[2] / t->width, ch = (float)t->present_crop[3] / t->height;
+            crop[0] += crop[2] * cx, crop[1] += crop[3] * cy;
+            crop[2] *= cw, crop[3] *= ch;
+        }
         widescreen_set_factor((float)shape);
         extern void renderer_set_alloc_scale(float ax, float ay);
         renderer_set_alloc_scale((float)os.ax, (float)os.ay);

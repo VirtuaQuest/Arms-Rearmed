@@ -334,6 +334,12 @@ static void prescan(uint64_t handle, Fences *f, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         const CmdRec *r = (const CmdRec *)(uintptr_t)p;
+        if (!p || r->op >= CMD_COUNT || r->size < sizeof(CmdRec) || (r->size & 7)) {  // (corrupt: never walk on)
+            static int nlog;
+            if (nlog++ < 8) LOG("[nvn] prescan: bad record op %u size %u at %llx (list %llx)\n", p ? r->op : 0,
+                                p ? r->size : 0, (unsigned long long)p, (unsigned long long)handle);
+            return;
+        }
         switch (r->op) {
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
@@ -349,6 +355,8 @@ static void prescan(uint64_t handle, Fences *f, int depth) {
         }
         p += r->size;
     }
+    static int nlog;
+    if (nlog++ < 8) LOG("[nvn] prescan: list %llx did not end after 10M records\n", (unsigned long long)handle);
 }
 
 uint64_t rq_submit(uint64_t handle) {

@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <pthread.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1347,8 +1348,36 @@ static VkCompareOp compare_op(uint32_t f) {
     }
 }
 
+// One VkSampler per distinct sampler state, kept for the run. Sampler pool slots are registered over and over (ARMS:
+// every frame), and each copy used to get a sampler of its own: NVIDIA's 4000 were used up in half a minute, then
+// device loss. Looked up by the state (the description without its backend field); d->backend memoizes it.
+static pthread_mutex_t g_smp_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct SmpEnt { NvnSamplerDesc key; VkSampler s; } *g_smp;
+static size_t g_smp_n, g_smp_cap;
+static VkSampler sampler_create(NvnSamplerDesc *d);
 VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (d->backend) return (VkSampler)d->backend;
+    NvnSamplerDesc key = *d;
+    key.backend = NULL;
+    size_t cmp = offsetof(NvnSamplerDesc, backend);
+    pthread_mutex_lock(&g_smp_lock);
+    VkSampler s = VK_NULL_HANDLE;
+    for (size_t i = 0; i < g_smp_n; i++)
+        if (!memcmp(&g_smp[i].key, &key, cmp)) { s = g_smp[i].s; break; }
+    if (!s) {
+        s = sampler_create(&key);
+        if (g_smp_n == g_smp_cap) {
+            g_smp_cap = g_smp_cap ? g_smp_cap * 2 : 128;
+            g_smp = realloc(g_smp, sizeof *g_smp * g_smp_cap);
+        }
+        g_smp[g_smp_n++] = (struct SmpEnt){key, s};
+        if (g_smp_n % 256 == 0) LOG("[vk] %zu distinct samplers\n", g_smp_n);
+    }
+    pthread_mutex_unlock(&g_smp_lock);
+    d->backend = (void *)s;
+    return s;
+}
+static VkSampler sampler_create(NvnSamplerDesc *d) {
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = d->mag_filter == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     uint32_t mf = d->min_filter;

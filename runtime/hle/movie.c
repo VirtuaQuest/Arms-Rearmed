@@ -78,6 +78,13 @@ HLE_FUNC("_ZNK5movie9MediaData9FindInt32EPKcPi", md_find_int32) {
         if (!m->e[i].is_str && !strcmp(m->e[i].key, k)) { *(int32_t *)(uintptr_t)c->x[2] = (int32_t)m->e[i].ival; c->x[0] = 1; return; }
     c->x[0] = 0;
 }
+HLE_FUNC("_ZNK5movie9MediaData9FindInt64EPKcPl", md_find_int64) {  // (ARMS: the duration, "durationUs")
+    MediaData *m = md(c->x[0]);
+    const char *k = (const char *)(uintptr_t)c->x[1];
+    for (int i = 0; i < m->n; i++)
+        if (!m->e[i].is_str && !strcmp(m->e[i].key, k)) { *(int64_t *)(uintptr_t)c->x[2] = m->e[i].ival; c->x[0] = 1; return; }
+    c->x[0] = 0;
+}
 // bool FindRect(const char *key, int *left, int *top, int *right, int *bottom) const: the only rectangle a decoder's
 // format has is its picture's ("crop", inclusive edges as Android's MediaFormat), from the width and height.
 HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
@@ -920,6 +927,15 @@ static void dec_get_counts(Cpu *c) {  // slot 14: (int*, int64*) queried after C
     c->x[0] = 0;
 }
 
+static void movie_decoder_ctor(Cpu *c);
+// (older NintendoSDK, ARMS: the constructor without the trailing int)
+HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE", movie_decoder_ctor3) {
+    static int n;
+    if (!n++) LOG("[movie] Decoder(type %llu, output format %llu, mode %llu) (3-argument constructor)\n",
+                  (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
+    c->x[4] = 0;
+    movie_decoder_ctor(c);
+}
 HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", movie_decoder_ctor) {
     uint64_t vt = g_dec_vt;
     if (!vt) {

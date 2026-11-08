@@ -456,7 +456,8 @@ static char gp_label[512][112];
 static uint32_t gp_draws[512];
 // LARECOMP_VK_DEVLOST_TRACE=1: the last 64 GPU operations, dumped on device loss (with LARECOMP_SYNC_SUBMIT=1 the
 // dump ends with the command list that faulted).
-static char dl_ring[64][128];
+#define DL_RING 8192  // (entries: a frame of draws at LARECOMP_VK_DEVLOST_TRACE=2)
+static char dl_ring[DL_RING][128];
 static unsigned dl_n;
 static int dl_on = -1;
 static void dl_note(const char *fmt, ...) {
@@ -464,14 +465,16 @@ static void dl_note(const char *fmt, ...) {
     if (!dl_on) return;
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(dl_ring[dl_n++ & 63], sizeof dl_ring[0], fmt, ap);
+    vsnprintf(dl_ring[dl_n++ % DL_RING], sizeof dl_ring[0], fmt, ap);
     va_end(ap);
 }
 void vk_dl_note_upload(void *img, uint32_t w, uint32_t h, uint32_t lv) { dl_note("  upload %p %ux%u lv%u", img, w, h, lv); }
 void vk_devlost_dump(void) {
     if (!dl_on) return;
     LOG("[vk] last GPU operations before the device loss (oldest first):\n");
-    for (unsigned i = dl_n > 64 ? dl_n - 64 : 0; i < dl_n; i++) LOG("[vk]   %s\n", dl_ring[i & 63]);
+    static int once;  // (several paths notice the loss)
+    if (once++) return;
+    for (unsigned i = dl_n > DL_RING ? dl_n - DL_RING : 0; i < dl_n; i++) LOG("[vk]   %s\n", dl_ring[i % DL_RING]);
 }
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
     if (!g_gpuprof_frame || gp_n >= 511) return;
@@ -5825,6 +5828,11 @@ static void draw_indirect(CmdRec *r, bool indexed) {
 
 static void draw(CmdRec *r, bool indexed) {
     note_observable();
+    if (dl_on > 1)  // (LARECOMP_VK_DEVLOST_TRACE=2: every draw, with its program's vertex / fragment code and counts)
+        dl_note("draw%s%s mode %llu n %llu x %llu inst %llu vs %llx fs %llx", indexed ? " indexed" : "", g_ind.on ? " indirect" : "",
+                (unsigned long long)r->x[0], (unsigned long long)r->x[indexed ? 2 : 2], (unsigned long long)r->x[indexed ? 3 : 1],
+                (unsigned long long)r->x[indexed ? 6 : 4], st.program ? (unsigned long long)st.program->stages[0].code_addr : 0ull,
+                st.program ? (unsigned long long)st.program->stages[1].code_addr : 0ull);
     PROF_T0();
     draw_(r, indexed);
     PROF_ADD(prof_draw);
@@ -7399,8 +7407,14 @@ static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
+        if (!p || r->op >= CMD_COUNT || r->size < sizeof(CmdRec) || (r->size & 7)) {  // (corrupt: never walk on)
+            static int nlog;
+            if (nlog++ < 8) LOG("[nvn] exec: bad record op %u size %u at %llx (list %llx)\n", p ? r->op : 0,
+                                p ? r->size : 0, (unsigned long long)p, (unsigned long long)handle);
+            return;
+        }
         void *x = r->extra;
-        if (r->op < CMD_COUNT) op_counts[r->op]++;
+        op_counts[r->op]++;
         if (g_debug_frame && r->op >= CMD_SET_RENDER_ENABLE && r->op != CMD_DRAW_ARRAYS && r->op != CMD_DRAW_ELEMENTS &&
             getenv("LARECOMP_DEBUG_OPS"))  // (the debug frame's commands other than state and direct draws)
             LOG("[op] %u x %llx %llx %llx %llx\n", r->op, (unsigned long long)r->x[0], (unsigned long long)r->x[1],
@@ -7410,7 +7424,12 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_JUMP: p = r->x[0]; continue;
         case CMD_CALL: {
             const uint64_t *h = x;
-            for (uint64_t i = 0; i < r->x[0] && depth < 8; i++) exec_list(h[i], depth + 1);
+            extern int nvn_check_lists(void);
+            extern void nvn_list_verify(uint64_t handle, const char *where);
+            for (uint64_t i = 0; i < r->x[0] && depth < 8; i++) {
+                if (nvn_check_lists()) nvn_list_verify(h[i], "CallCommands (at execution)");
+                exec_list(h[i], depth + 1);
+            }
             break;
         }
         case CMD_BIND_PROGRAM: st.program = bound_program((NvnProgram *)(uintptr_t)r->x[0], (uint32_t)r->x[1]); break;
@@ -7654,6 +7673,8 @@ static void exec_list(uint64_t handle, int depth) {
         }
         p += r->size;
     }
+    static int nlog;  // (a list that never ends: a jump cycle)
+    if (nlog++ < 8) LOG("[nvn] exec: list %llx did not end after 10M records\n", (unsigned long long)handle);
 }
 
 void backend_execute(uint64_t handle) {

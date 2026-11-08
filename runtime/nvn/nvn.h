@@ -19,7 +19,24 @@
 typedef struct NvnPool {
     uint64_t storage, size;
     uint32_t flags;
+    // NVN_MEMORY_POOL_FLAGS_VIRTUAL (0x200): no storage of its own; MapVirtual points ranges of it at physical pools'
+    // memory (objects.c nvn_pool_addr). Ranges never mapped read as `backing`, zeroed host memory made on first use.
+    struct NvnVMap { uint64_t voff, size, phys; } *maps;
+    int nmaps, cap_maps;
+    uint64_t backing;
 } NvnPool;
+#define NVN_POOL_VIRTUAL 0x200u
+// Host objects behind guest NVN objects (objects.c). NVN objects are plain data on the Switch and games copy them
+// by value (ARMS: textures and samplers) and finalize the copies too - sometimes only the copies. A host object is
+// released by the first Finalize of any object holding it, once; later ones (other copies) do nothing, and a copy
+// used after that names no live object (nvn_texture_of: left out, never a freed pointer).
+void nvn_live_add(void *host, uint64_t owner);
+bool nvn_live_release(void *host, uint64_t guest);  // true: `host` was live (now released: free it)
+bool nvn_live_has(const void *host);
+// The live host texture behind a guest NVNtexture* (NULL, logged, when it names none: never initialized, or overwritten)
+struct NvnTexture *nvn_texture_of(uint64_t guest, const char *what);
+// The host address of `off` in a pool (a virtual pool's offsets go through its mappings)
+uint64_t nvn_pool_addr(NvnPool *p, uint64_t off);
 
 typedef struct NvnTexture {
     TexLayout layout;
@@ -34,6 +51,9 @@ typedef struct NvnTexture {
     uint32_t pool_refs;  // texture pool entries that name it (cleared when it is finalized: runtime/nvn/objects.c)
     bool format_views;   // named through a view in a format the backend can only give with a flag (Metal: PixelFormatView)
     char label[64];
+    int present_crop[4]; // the window's crop (x, y, w, h texels) when it was last presented (ARMS: dynamic resolution)
+    bool finalized;      // nvnTextureFinalize ran (through any copy); collected later (objects.c nvn_texture_gc)
+    uint64_t fin_at, last_use;  // present counts: when finalized, when last named through a guest object
 } NvnTexture;
 
 typedef struct {
@@ -99,16 +119,19 @@ typedef struct NvnSync {
 } NvnSync;
 
 // ---- command recording (stored in guest command memory)
+typedef struct CmdChunk CmdChunk;
 typedef struct {
-    uint64_t mem;    // current command memory chunk (guest address)
-    uint64_t size;   // chunk size
-    uint64_t used;   // bytes used in chunk
-    // Overflow (cmdbuf.c): the game sizes command memory for NVN's own compact encoding, which our records outgrow
-    // (ARMS hands out 512-byte chunks and has an empty out-of-memory callback). Past the guest chunk, records go on
-    // in host blocks kept per guest chunk address and reused when the game adds that chunk again.
-    uint64_t chunk, chunk_size;  // the guest chunk last added (the overflow key) and its size
-    int ovf_next;                // next overflow block of that chunk
-    bool in_ovf;                 // mem/size/used are an overflow block
+    // Records live in host blocks, never in the game's command memory (cmdbuf.c: why, and when blocks are reused)
+    uint64_t mem;    // the host block being written
+    uint64_t size;   // its size
+    uint64_t used;   // bytes used in it
+    uint64_t chunk, chunk_size;  // the guest chunk last added and its size (never written)
+    uint64_t vused;              // what the game is told is used in it: an estimate of NVN's own encoding
+    bool oom_called;             // the game's out-of-memory callback ran for this chunk
+    CmdChunk *hc;                // the chunk's host blocks
+    uint32_t hc_gen;             // hc's generation when taken (it changes when the game reuses the chunk)
+    int blk;                     // the block of hc in use
+    uint64_t next_start, cc_epoch;  // the next chunk's start after ours (and the chunk epoch it was found in)
     uint64_t start;  // first record of the list being recorded
     uint64_t callback, callback_data;
     bool recording;
