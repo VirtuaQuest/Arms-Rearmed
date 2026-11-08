@@ -81,7 +81,7 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
         for (USHORT i = 0; i < nb && !game; i++) {
             char w[300];
             watch_where(w, sizeof w, (uint64_t)(uintptr_t)bt[i]);
-            game = !strncmp(w, "mua3game.dll", 12);
+            game = !strncmp(w, "armsgame.dll", 12);
         }
         if (!seen && game && nkeys < 64) {  // (one line per caller: a memcpy faults on every byte)
             keys[nkeys++] = key;

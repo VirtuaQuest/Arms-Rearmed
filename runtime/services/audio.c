@@ -1141,9 +1141,11 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     o += oh[8];
     oh[1] = 0xB0;  // behavior / error info
     o += 0xB0;
-    oh[10] = 0x10;  // render info: elapsed frame count
-    if (o + 0x10 <= out->size) *(uint64_t *)(op + o) = elapsed;
-    o += 0x10;
+    if ((r->revision >> 24) - '0' >= 5) {  // render info: elapsed frame count (REV5+; SDK 4's REV4 has no such
+        oh[10] = 0x10;                     // section and aborts on an output of another size: ARMS)
+        if (o + 0x10 <= out->size) *(uint64_t *)(op + o) = elapsed;
+        o += 0x10;
+    }
     oh[15] = o;
     (void)resp;
 }

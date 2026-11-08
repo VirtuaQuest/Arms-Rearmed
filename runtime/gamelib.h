@@ -11,13 +11,13 @@
 #include "cpu.h"
 
 #if defined(_WIN32)
-#define GAMELIB_NAME "mua3game.dll"
+#define GAMELIB_NAME "armsgame.dll"
 #define GAMELIB_EXPORT __declspec(dllexport)
 #elif defined(__APPLE__)
-#define GAMELIB_NAME "mua3game.dylib"
+#define GAMELIB_NAME "armsgame.dylib"
 #define GAMELIB_EXPORT __attribute__((visibility("default")))
 #else
-#define GAMELIB_NAME "mua3game.so"
+#define GAMELIB_NAME "armsgame.so"
 #define GAMELIB_EXPORT __attribute__((visibility("default")))
 #endif
 
@@ -58,12 +58,12 @@ typedef struct {
     uint32_t abi;    // GAMELIB_ABI
     const char *id;  // GAMELIB_ID-<build ID> (gamelib_full_id)
     uint32_t nmodules;
-    GameLibModule modules[GAMELIB_MAX_MODULES];  // game (exefs/main), sdk, glslc (exefs/subsdk1)
+    GameLibModule modules[GAMELIB_MAX_MODULES];  // game (exefs/main), sdk
 } GameLibTables;
 
 // The library's one exported function (tools/gamelib_entry.c).
 typedef const GameLibTables *(*GameLibEntry)(void);
-#define GAMELIB_ENTRY "mua3game_tables"
+#define GAMELIB_ENTRY "armsgame_tables"
 
 #ifdef __cplusplus
 extern "C" {

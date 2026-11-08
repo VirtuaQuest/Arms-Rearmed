@@ -177,7 +177,7 @@ void loader_load(const char *exefs) {
     char path[1024];
     // (exefs/subsdk0, the multimedia library, is not loaded: its movie:: API is host code, runtime/hle/movie.c)
     static const struct { const char *name; uint64_t base; } mods[] = {
-        {"main", MAIN_BASE}, {"sdk", SDK_BASE}, {GLSLC_NSO, GLSLC_BASE}};
+        {"main", MAIN_BASE}, {"sdk", SDK_BASE}};
     for (unsigned i = 0; i < sizeof mods / sizeof *mods; i++) {
         Module *m = &g_modules[g_nmodules++];
         m->name = mods[i].name;

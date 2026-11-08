@@ -5,11 +5,10 @@
 #define MODULE(n) extern const uint64_t n##_fn_addrs[], n##_fn_count; extern const GuestFn n##_fn_ptrs[];
 MODULE(game)
 MODULE(sdk)
-MODULE(glslc)
 #undef MODULE
 #define MODULE(n) {#n, n##_fn_addrs, n##_fn_ptrs, &n##_fn_count}
 
-GAMELIB_EXPORT const GameLibTables *mua3game_tables(void) {
-    static const GameLibTables t = {GAMELIB_ABI, GAMELIB_ID, 3, {MODULE(game), MODULE(sdk), MODULE(glslc)}};
+GAMELIB_EXPORT const GameLibTables *armsgame_tables(void) {
+    static const GameLibTables t = {GAMELIB_ABI, GAMELIB_ID, 2, {MODULE(game), MODULE(sdk)}};
     return &t;
 }

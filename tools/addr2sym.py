@@ -1,4 +1,4 @@
-"""Name guest addresses: the nearest function symbol of the module they fall in (main, sdk, subsdk1: glslc).
+"""Name guest addresses: the nearest function symbol of the module they fall in (main, sdk).
 
 Usage: addr2sym.py <addr> [<addr> ...]   (hex, with or without 0x; f_<addr> as in crash logs works too)
 """
@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nso import Nso  # noqa: E402
 
 EXEFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'extracted', 'exefs')
-MODULES = [('main', 0x7000000000), ('sdk', 0x7006000000), ('subsdk1', 0x7007000000)]
+MODULES = [('main', 0x7000000000), ('sdk', 0x7006000000)]
 
 
 def tables():

@@ -247,7 +247,7 @@ void settings_load(void) {
 void settings_save(void) {
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
-    fprintf(f, "# MUA3 Recomp settings (the launcher, and the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
+    fprintf(f, "# ARMS Recomp settings (the launcher, and the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "exclusive_fullscreen = %d\n", g_settings.exclusive_fullscreen);

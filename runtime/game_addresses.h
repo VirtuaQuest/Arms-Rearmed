@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 typedef struct GameAddrs {
-    uint64_t unused;  // DOAX3: no game addresses needed by the runtime yet (add GA fields here as they're found)
+    uint64_t unused;  // ARMS: no game addresses needed by the runtime yet (add GA fields here as they're found)
 } GameAddrs;
 
 // The selected table (NULL until game_version_select succeeds).

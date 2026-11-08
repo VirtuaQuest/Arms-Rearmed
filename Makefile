@@ -1,6 +1,6 @@
-# MUA3 Recomp build (Windows: MSYS2 UCRT64 clang + Vulkan, as LAS Recomp's Windows build).
+# ARMS Recomp build (Windows: MSYS2 UCRT64 clang + Vulkan, as LAS Recomp's Windows build).
 #   make gen   recompile extracted/exefs (your own game files) into generated/
-#   make -j    build/mua3recomp.exe and the game code library build/mua3game.dll
+#   make -j    build/armsrecomp.exe and the game code library build/armsgame.dll
 # From an MSYS2 UCRT64 shell, or Git Bash with: export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 comma := ,
 B        ?= build
@@ -18,11 +18,11 @@ RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Ir
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(OSFLAGS)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lws2_32 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared \
-            -Wl,--error-limit=0 -Wl,--export-all-symbols -Wl,--out-implib,$(B)/mua3recomp.dll.a
+            -Wl,--error-limit=0 -Wl,--export-all-symbols -Wl,--out-implib,$(B)/armsrecomp.dll.a
 
-EXE      := $(B)/mua3recomp.exe
-GAMELIB  := $(B)/mua3game.dll
-MODULES  := game sdk glslc
+EXE      := $(B)/armsrecomp.exe
+GAMELIB  := $(B)/armsgame.dll
+MODULES  := game sdk
 
 GEN_SRC  := $(strip $(foreach m,$(MODULES),$(wildcard $(GEN)/$(m)/*.c)))
 GEN_OBJ  := $(patsubst $(GEN)/%.c,$(B)/obj/%.o,$(GEN_SRC)) $(B)/obj/tools/gamelib_entry.o
@@ -55,7 +55,6 @@ all: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
 gen:
 	cd tools && ../$(PY) gen.py game ../extracted/exefs/main 0x7000000000 ../$(GEN)/game --simd c
 	cd tools && ../$(PY) gen.py sdk ../extracted/exefs/sdk 0x7006000000 ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt --simd c
-	cd tools && ../$(PY) gen.py glslc ../extracted/exefs/subsdk1 0x7007000000 ../$(GEN)/glslc --simd c
 
 $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h
 	@mkdir -p $(dir $@)
@@ -66,7 +65,7 @@ $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_FULL_ID)"' -c $< -o $@
 
 $(GAMELIB): $(GEN_OBJ) | $(EXE)
-	$(CC) -shared -fuse-ld=lld $(B)/mua3recomp.dll.a -o $@.tmp $^ $(B)/mua3recomp.dll.a
+	$(CC) -shared -fuse-ld=lld $(B)/armsrecomp.dll.a -o $@.tmp $^ $(B)/armsrecomp.dll.a
 	mv -f $@.tmp $@
 	echo $(GAMELIB_FULL_ID) > $@.id
 
@@ -121,7 +120,7 @@ $(B)/icon_res.o: $(B)/icon.ico
 	windres -i $(B)/icon.rc -o $@
 
 # ---- the launcher (launcher/launcher.cpp): the display and frame rate settings, then the game
-LAUNCHER := $(B)/mua3launcher.exe
+LAUNCHER := $(B)/armslauncher.exe
 LAUNCHER_IMGUI := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
                   $(B)/imgui/imgui_impl_sdl3.o $(B)/imgui/imgui_impl_sdlrenderer3.o
 $(B)/launcher/launcher.o: launcher/launcher.cpp

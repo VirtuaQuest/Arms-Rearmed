@@ -103,6 +103,12 @@ typedef struct {
     uint64_t mem;    // current command memory chunk (guest address)
     uint64_t size;   // chunk size
     uint64_t used;   // bytes used in chunk
+    // Overflow (cmdbuf.c): the game sizes command memory for NVN's own compact encoding, which our records outgrow
+    // (ARMS hands out 512-byte chunks and has an empty out-of-memory callback). Past the guest chunk, records go on
+    // in host blocks kept per guest chunk address and reused when the game adds that chunk again.
+    uint64_t chunk, chunk_size;  // the guest chunk last added (the overflow key) and its size
+    int ovf_next;                // next overflow block of that chunk
+    bool in_ovf;                 // mem/size/used are an overflow block
     uint64_t start;  // first record of the list being recorded
     uint64_t callback, callback_data;
     bool recording;

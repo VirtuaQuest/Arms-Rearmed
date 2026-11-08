@@ -59,7 +59,7 @@ void game_frame_rate(int fps) {
 }
 
 // ---- version, for the shader caches' tag (runtime/nvn/shader_prep.c)
-const char *larecomp_version(void) { return "mua3-dev"; }
+const char *larecomp_version(void) { return "arms-dev"; }
 
 // ---- input (runtime/hle/input.c)
 bool mirror_input(void) { return false; }

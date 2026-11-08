@@ -38,7 +38,7 @@ SERVICE("pctl:r", pctl_r) { pctl_root(s, req, resp); }
 // ------------------------------------------------------------------ aoc:u
 // The add-on content the player has: the indices whose images tools/nsp_extract.py --dlc saved (runtime/services/fs.c
 // serves them). MUA3's DLC characters and stories are in its update; the Expansion Pass (index 1) unlocks them.
-#define AOC_BASE 0x010060700AC51000ull  // (app id + 0x1000)
+#define AOC_BASE 0x01009B500007D000ull  // (app id + 0x1000; ARMS has no add-on content)
 #define AOC_MAX 16
 
 bool aoc_image_path(uint64_t id, char *out, size_t n);

@@ -1,5 +1,58 @@
 # Changes
 
+## ARMS bring-up (2026-11-08)
+
+This repository started as a copy of MUA3 Recomp (mua3 branch of DOA-Xtreme-3-Recomp at 96e0db9, built on LAS Recomp)
+and is retargeted at **ARMS 5.4.0** (title 01009B500007C000, main build ID 501924B7C22129E5, NintendoSDK 4.4.3,
+NVN 53, NEX 4.3.5). The sections after this one are the history inherited from DOAX3 / MUA3.
+
+**Modules:** `main` (0x1769000 bytes, 64,949 functions) and `sdk` (28,231 functions) are recompiled; `subsdk0` is the
+movie library (host code, `runtime/hle/movie.c`); there is no glslc module (`GLSLC_*` removed from `rt.h`,
+`loader.c`, `gamelib_entry.c`, the Makefile).
+
+**Setup used:** `.venv/Scripts/python -I tools/nsp_extract.py "<ARMS.xci>" "<prod.keys>" extracted --update
+"<update.nsp>"` (under 1 s: exefs, control, `romfs.src`), `make gen PY=.venv/Scripts/python.exe` (~35 s),
+`make -j18 PY=.venv/Scripts/python.exe` (~8 min the first time), `tools/run.sh <seconds>` (log `arms.log`).
+
+**Changed for ARMS:**
+- `tools/nsp_extract.py`: an XCI base (the root HFS0's `secure` partition; HFS0 entries are 0x40 bytes), key file
+  lines that aren't hex are skipped.
+- `runtime/nvn/cmdbuf.c`: ARMS gives command buffers 512-byte chunks sized for NVN's own encoding and has an empty
+  out-of-memory callback (f_7000980168), so our 88+ byte records ran out ("out of command memory"). Records now go on
+  in 64 KB host blocks per guest chunk address (`ovf_next_block`), reused when the game adds that chunk again.
+  `LARECOMP_LOG_CMDMEM=<n>` logs the first n AddCommandMemory calls.
+- `runtime/services/audio.c`: no render info section in RequestUpdate's output below REV5. ARMS uses REV4 and
+  `nn::audio::RequestUpdateAudioRenderer` aborted on the output size.
+- `runtime/services/friends.c` (new): friend:u/a/m/v/s with an empty friend list. Without an IFriendService object
+  `nn::friends::GetFriendList` crashed on a null session.
+- Names and ids: `armsrecomp.exe`, `armsgame.dll`, `armslauncher.exe`, program id, add-on base 0x01009B500007D000,
+  the version table, the window title "ARMS Recomp".
+
+**Status:** boots through SDK/engine init, services, the save mount, the audio renderer and NVN device, compiles
+its first shaders and draws ~53 frames (26 fps), then rendering stops about 4.5 s in. Nothing has been seen on
+screen yet (no screenshot was taken before it stopped).
+
+**Where it stopped (next step):** the replay's command counts show 30,000,448 records of op 23
+(`CMD_SET_BLEND_COLOR`) in the first 4.5 s: a command list walk looping (the 10,000,000 guard in `exec_list` /
+`prescan`, three times), so a list's records are corrupt or form a cycle. Suspect the overflow above:
+- `nvnCommandBufferGetCommandMemoryFree` returns 0 while in overflow, which may make the game add chunks mid-recording;
+  if it adds back a chunk the open list still uses, new records overwrite it and jumps can cycle. Try reporting the
+  overflow block's real free space instead, and check `LARECOMP_LOG_CMDMEM` for adds with `recording 1`.
+- The first log showed one command buffer (723b580c10) given the same chunk 72696b4100+0x800 over and over with
+  recording 0 (it resets the buffer each time: fine by itself).
+- Add a check in `exec_list`/`prescan` for `r->size < sizeof(CmdRec)` or `op >= CMD_COUNT` that logs the handle and
+  stops, so a bad list can't hang the renderer.
+
+**Also seen, not handled yet:** `MemoryPoolMapVirtual` (virtual pools not modelled), `AddControlMemory`,
+`SetShaderScratchMemory`, `SetDepthClamp`, `SetTiledCacheAction/TileSize` not implemented; `prepo:u` is a logging stub.
+
+**Planned (the original request):** a launcher that picks the base game (XCI/NSP), update and keys, runs the extraction,
+recompile and build, and offers resolution, window mode, frame rate and other graphics options, styled in an original
+bright look (no game art or fonts). Controllers through SDL 3 (already there), plus keyboard and mouse: WASD move,
+left/right click left/right punch, both or middle click grab, Space jump, Shift dash, Ctrl guard (left stick click),
+E rush, Tab change target. Check the in-game controls screen first: sources disagree on rush (L or R).
+ARMS runs at 60 fps natively, so higher rates need its time step found first.
+
 What this project changed relative to [LAS Recomp](https://github.com/peiikai/LASRecomp) (its recompiler and Switch
 runtime), why, and where. It also lists the debugging switches, the test routes, the known gaps and the next steps.
 It started as DOAX3 Recomp (the sections from "Project setup" to "Test routes" are that work, which MUA3 inherits:

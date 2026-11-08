@@ -24,21 +24,25 @@ def load_keys(path):
     for line in open(path, encoding='utf-8'):
         if '=' in line:
             k, v = line.split('=', 1)
-            keys[k.strip()] = bytes.fromhex(v.strip())
+            try:
+                keys[k.strip()] = bytes.fromhex(v.strip())
+            except ValueError:  # (lines that aren't keys)
+                pass
     return keys
 
 
 def pfs0_entries(read, base):
-    """[(name, abs_offset, size)] of a PFS0 at `base`, read via read(off, n)."""
+    """[(name, abs_offset, size)] of a PFS0 (or an XCI's HFS0, whose entries are 0x40 bytes) at `base`."""
     magic, n, strsz, _ = struct.unpack('<4sIII', read(base, 0x10))
-    assert magic == b'PFS0', magic
-    ents = read(base + 0x10, n * 0x18)
-    strs = read(base + 0x10 + n * 0x18, strsz)
-    data = base + 0x10 + n * 0x18 + strsz
+    assert magic in (b'PFS0', b'HFS0'), magic
+    esz = 0x18 if magic == b'PFS0' else 0x40
+    ents = read(base + 0x10, n * esz)
+    strs = read(base + 0x10 + n * esz, strsz)
+    data = base + 0x10 + n * esz + strsz
     out = []
     for i in range(n):
-        off, size, so, _ = struct.unpack_from('<QQII', ents, i * 0x18)
-        name = strs[so:strs.index(b'\0', so)].decode()
+        off, size, so = struct.unpack_from('<QQI', ents, i * esz)
+        name = strs[so:strs.index(b"\0", so)].decode()
         out.append((name, data + off, size))
     return out
 
@@ -277,10 +281,16 @@ def write_romfs_source(path, romfs, sections):
 
 
 def open_nsp(path, keys):
-    """{content kind: Nca} of an NSP."""
+    """{content kind: Nca} of an NSP, or of an XCI (game card image: the NCAs are in its root HFS0's "secure"
+    partition, and offsets stay absolute in the file, so romfs.src can point into the XCI the same way)."""
     f = open(path, 'rb')
     rd = lambda off, n: (f.seek(off), f.read(n))[1]
-    ents = pfs0_entries(rd, 0)
+    if rd(0x100, 4) == b'HEAD':
+        root = struct.unpack('<Q', rd(0x130, 8))[0]
+        parts = {name: off for name, off, _ in pfs0_entries(rd, root)}
+        ents = pfs0_entries(rd, parts['secure'])
+    else:
+        ents = pfs0_entries(rd, 0)
     tickets = {}
     for name, off, size in ents:
         if name.endswith('.tik'):
@@ -301,7 +311,7 @@ def open_nsp(path, keys):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('nsp', help='the base game')
+    ap.add_argument('nsp', help='the base game: an .nsp or an .xci')
     ap.add_argument('keys')
     ap.add_argument('outdir')
     ap.add_argument('--update', help="the game's update NSP: its code, and its RomFS patched over the base game's")
