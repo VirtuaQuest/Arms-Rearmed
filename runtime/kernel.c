@@ -1,4 +1,5 @@
 // A small Horizon kernel: handles, threads, synchronization, memory, and the SVC dispatcher.
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -187,6 +188,127 @@ void rt_unwind_point(void) {
     if (__builtin_expect(g_rt_unwind, 0) && t_cur) longjmp(t_cur->unwind, 1);
 }
 
+// ---- core exclusion. On the Switch the threads of one core never run at the same time: Horizon switches between
+// them when one waits, sleeps or yields, or when a higher priority thread of that core becomes ready. ARMS pins its
+// threads to cores (SetThreadCoreMask) and its job code relies on it: with every thread running in parallel,
+// intrusive lists were walked while another thread of the same core changed them (null node crashes, about one run
+// in two).
+// - A pinned thread (one core in its mask) runs guest code holding its core's lock; threads the game never pinned
+//   (CreateThread with the default core) float, as Horizon moves them to idle cores: they take no lock.
+// - The lock is given up for every kernel wait, sleep, yield and IPC request, and around long host waits in HLE
+//   functions (kernel_core_leave / enter: present pacing, GPU fences).
+// - Preemption: a thread waiting for its core sets its priority's bit in the core's wait mask; the holder checks the
+//   mask at each HLE call and kernel call (kernel_core_preempt: memcpy / memset are HLE functions, so that is often)
+//   and hands the core over to a higher priority waiter.
+// - A thread that can't get its core for CORE_WAIT_MS runs anyway (a spin-wait on another thread of its core would be
+//   preempted on the console; here it would wait forever).
+// LARECOMP_CORES=0: off; LARECOMP_LOG_CORES=1: holds over 20 ms (who and where).
+#define GUEST_CORES 4
+#define CORE_WAIT_MS 250
+static pthread_mutex_t g_core_mu[GUEST_CORES] = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
+                                                 PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
+static _Atomic uint64_t g_core_waitmask[GUEST_CORES];  // bit p: a thread of priority p waits for the core
+static _Atomic int g_core_nwait[GUEST_CORES][64];
+static _Atomic int g_core_holder_prio[GUEST_CORES];  // (the holder's priority: a higher priority waiter waits less)
+#define CORE_PREEMPT_MS 2
+static __thread uint64_t t_core_since;
+static int cores_on(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_CORES") || atoi(getenv("LARECOMP_CORES")) != 0;
+    return on;
+}
+static void wait_note(int c, int p, int d) {  // (a waiter of priority p arrives (+1) or leaves (-1))
+    p &= 63;
+    int n = atomic_fetch_add(&g_core_nwait[c][p], d) + d;
+    if (n > 0) atomic_fetch_or(&g_core_waitmask[c], 1ull << p);
+    else atomic_fetch_and(&g_core_waitmask[c], ~(1ull << p));
+}
+static void core_take(KThread *t) {  // (never with g_klock held)
+    if (!t || !cores_on() || t->held_core >= 0 || !t->pinned) return;
+    int c = (unsigned)t->core % GUEST_CORES;
+    if (pthread_mutex_trylock(&g_core_mu[c]) != 0) {
+        wait_note(c, t->prio, +1);
+        // a higher priority than the holder's: on the console it would preempt the holder at once. The holder hands
+        // the core over at its next HLE or kernel call; one in a long computation (decompression: no calls for tens
+        // of ms) is run beside after CORE_PREEMPT_MS instead.
+        bool higher = t->prio < atomic_load(&g_core_holder_prio[c]);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += (higher ? CORE_PREEMPT_MS : CORE_WAIT_MS) * 1000000L;
+        while (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        int r = pthread_mutex_timedlock(&g_core_mu[c], &ts);
+        wait_note(c, t->prio, -1);
+        if (r != 0) {
+            static int nlog;
+            if (!higher && nlog++ < 16) LOG("[kernel] thread %x waited %d ms for core %d: runs without it\n", t->handle, CORE_WAIT_MS, c);
+            return;
+        }
+    }
+    atomic_store(&g_core_holder_prio[c], t->prio);
+    t->held_core = c;
+    t_core_since = plat_now_ns();
+}
+
+static void core_give(KThread *t) {
+    if (!t || t->held_core < 0) return;
+    int c = t->held_core;
+    t->held_core = -1;
+    static int log = -1;
+    if (log < 0) log = getenv("LARECOMP_LOG_CORES") != NULL;
+    if (log && t_core_since) {
+        uint64_t d = plat_now_ns() - t_core_since;
+        static int n;
+        const Cpu *tc = t->active ? t->active : &t->cpu;
+        if (d > 20000000 && n++ < 400)
+            LOG("[cores] thread %x held core %d for %llu ms (pc %llx lr %llx)\n", t->handle, c,
+                (unsigned long long)(d / 1000000), (unsigned long long)tc->pc, (unsigned long long)tc->x[30]);
+    }
+    pthread_mutex_unlock(&g_core_mu[c]);
+}
+// Around a long host wait inside an HLE function (present pacing, GPU fences): the core's other threads run
+// meanwhile, as they would while the thread waits in Horizon's kernel.
+bool kernel_core_leave(void) {
+    KThread *t = t_cur;
+    if (!t || t->held_core < 0) return false;
+    core_give(t);
+    return true;
+}
+void kernel_core_enter(bool had) {
+    if (had) core_take(t_cur);
+}
+// After a kernel call or an HLE function that may have waited (block_current gave the core up); and the preemption
+// point: a higher priority thread waiting for this core gets it first.
+void kernel_core_resume(void) {
+    KThread *t = t_cur;
+    if (!t) return;
+    if (t->core_pending) {
+        t->core_pending = false;
+        core_take(t);
+        return;
+    }
+    if (t->held_core < 0) return;
+    int c = t->held_core, p = t->prio & 63;
+    if (!(atomic_load_explicit(&g_core_waitmask[c], memory_order_relaxed) & ((1ull << p) - 1))) return;
+    core_give(t);
+    for (int i = 0; i < 64 && (atomic_load(&g_core_waitmask[c]) & ((1ull << p) - 1)); i++) sched_yield();
+    core_take(t);
+}
+// A thread's core from SetThreadCoreMask / CreateThread: pinned when the mask names one core
+static void core_assign(KThread *t, int ideal, uint64_t mask) {
+    int core = t->core;
+    if (ideal >= 0 && ideal < 64 && ((mask >> ideal) & 1)) core = ideal;
+    else if (mask & 0xF) core = __builtin_ctzll(mask & 0xF);
+    bool pinned = mask && !(mask & (mask - 1));
+    if (t == t_cur && (core != t->core || pinned != t->pinned)) {  // (moves now: its old core's lock for the new one's)
+        bool had = t->held_core >= 0;
+        core_give(t);
+        t->core = core, t->pinned = pinned;
+        if (had || pinned) core_take(t);
+    } else {
+        t->core = core, t->pinned = pinned;
+    }
+}
+
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
@@ -194,7 +316,9 @@ static void *thread_main(void *arg) {
     if (t->is_main) plat_thread_perf_core(PLAT_PERF_GAME);  // (the game's frame runs here)
     crash_handler_install();
     rt_set_fpcr(0);
+    core_take(t);
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
+    core_give(t);
     pthread_mutex_lock(&g_klock);
     t->finished = true;
     kernel_signal(&t->obj);
@@ -209,7 +333,9 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->obj.type = KOBJ_THREAD;
     t->entry = entry;
     t->prio = prio;
-    t->core = core < 0 ? 0 : core;
+    t->core = core < 0 ? 0 : core;  // (-2: the process's default core, 0 in ARMS's NPDM: floating, see core_assign)
+    t->pinned = core >= 0;
+    t->held_core = -1;
     t->cpu.x[0] = arg;
     t->cpu.sp = stack_top & ~15ull;
     t->cpu.excl_addr = ~0ull;
@@ -343,6 +469,7 @@ static uint32_t block_current(int64_t timeout_ns) {
     struct timespec ts;
     if (timeout_ns >= 0) deadline(&ts, timeout_ns);
     t->wait_since = plat_now_ns();
+    if (t->held_core >= 0) { core_give(t); t->core_pending = true; }  // (taken back once g_klock is released)
     waitlist_add(t);
     while (t->wait_kind != WAIT_NONE) {
         if (g_rt_unwind) {  // reboot: give up the wait (the thread unwinds when its svc returns)
@@ -603,6 +730,7 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
     svc_entry(c, imm, pc);
+    kernel_core_resume();
     rt_unwind_point();
 }
 
@@ -696,7 +824,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x08: {  // CreateThread(_, entry, arg, stack_top, prio, core)
         KThread *t = thread_new(x[1], x[2], x[3], (int)x[4], (int)(int32_t)x[5]);
         t->handle = kernel_new_handle(&t->obj);
-        LOG("[kernel] CreateThread entry=%llx stack=%llx prio=%d -> %x\n", x[1], x[3], (int)x[4], t->handle);
+        LOG("[kernel] CreateThread entry=%llx stack=%llx prio=%d core=%d -> %x\n", x[1], x[3], (int)x[4], (int)(int32_t)x[5], t->handle);
         x[0] = R_OK;
         x[1] = t->handle;
         break;
@@ -718,13 +846,16 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
                              (x[19] >> 32 == 0x72 || x[19] >> 32 == 0x70) ? *(float *)(uintptr_t)(x[19] + 0x98) : 0.0f,
                              (x[19] >> 32 == 0x72 || x[19] >> 32 == 0x70) ? (unsigned long long)*(uint64_t *)(uintptr_t)(x[19] + 0x68) : 0ull);
         }
-        if (ns <= 0) { sched_yield(); break; }
+        bool had_core = t_cur && t_cur->held_core >= 0;  // (sleeping and yielding let the core's other threads run)
+        core_give(t_cur);
+        if (ns <= 0) { sched_yield(); if (had_core) core_take(t_cur); break; }
         for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;) {
             uint64_t d = end - now < 50000000 ? end - now : 50000000;
             struct timespec ts = {(time_t)(d / 1000000000), (long)(d % 1000000000)};
             nanosleep(&ts, NULL);
             g_blocked_ns += plat_now_ns() - now;
         }
+        if (had_core) core_take(t_cur);
         break;
     }
     case 0x0C: {  // GetThreadPriority(_, handle)
@@ -746,7 +877,17 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[2] = 0xF;
         break;
     }
-    case 0x0F: x[0] = R_OK; break;  // SetThreadCoreMask
+    case 0x0F: {  // SetThreadCoreMask(handle, ideal core, mask) (core exclusion: kernel.c core_assign)
+        uint32_t h = (uint32_t)x[0];
+        KObject *o = h == 0xFFFF8000u ? (t_cur ? &t_cur->obj : NULL) : handle_get(h);
+        if (!o || o->type != KOBJ_THREAD) { x[0] = R_INVALID_HANDLE; break; }
+        core_assign((KThread *)o, (int)(int32_t)x[1], x[2]);
+        static int n;
+        if (n++ < 64) LOG("[kernel] SetThreadCoreMask %x ideal %d mask %#llx: core %d%s\n", h, (int)(int32_t)x[1],
+                          (unsigned long long)x[2], ((KThread *)o)->core, ((KThread *)o)->pinned ? " (pinned)" : "");
+        x[0] = R_OK;
+        break;
+    }
     case 0x10: x[0] = t_cur->core; break;  // GetCurrentProcessorNumber
     case 0x11: case 0x12: case 0x17: {  // SignalEvent / ClearEvent / ResetSignal
         pthread_mutex_lock(&g_klock);
@@ -820,11 +961,18 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[1] = h;
         break;
     }
-    case 0x21: x[0] = ipc_handle_request(c, (uint32_t)x[0]); break;  // SendSyncRequest
+    case 0x21: {  // SendSyncRequest (the thread waits in the kernel for the service: its core is free meanwhile)
+        bool core = kernel_core_leave();
+        x[0] = ipc_handle_request(c, (uint32_t)x[0]);
+        kernel_core_enter(core);
+        break;
+    }
     case 0x22: {  // SendSyncRequestWithUserBuffer(buf, size, handle)
         uint64_t saved = c->tpidrro;
         c->tpidrro = x[0];
+        bool core = kernel_core_leave();
         x[0] = ipc_handle_request(c, (uint32_t)x[2]);
+        kernel_core_enter(core);
         c->tpidrro = saved;
         break;
     }

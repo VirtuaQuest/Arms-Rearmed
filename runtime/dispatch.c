@@ -165,6 +165,8 @@ __attribute__((noinline)) static GuestFn dispatch_slow(Cpu *c) {
     uint64_t pc = c->pc;
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
         rt_unwind_point();  // (HLE calls aren't cached below, so every one passes here: a reboot's safe point)
+        extern void kernel_core_resume(void);  // (an earlier HLE call that waited in the kernel gave its core up)
+        kernel_core_resume();
         int i = (int)((pc - HLE_BASE) / 16);
         if (i < hle_count) {
             if (hle_slots[i].fn) return hle_slots[i].fn;

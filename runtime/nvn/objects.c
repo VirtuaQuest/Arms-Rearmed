@@ -239,11 +239,13 @@ __thread uint64_t g_submit_ns, g_gpu_wait_ns;
 NVN(nvnQueueFlush) { (void)c; }
 NVN(nvnQueueFinish) {
     (void)c;
+    bool core = kernel_core_leave();  // (the core's other threads run while this one waits for the GPU)
     if (rq_on()) rq_drain();
     uint64_t t0 = plat_now_ns();
     rq_watch("QueueFinish: the GPU", 0);
     renderer_sync();
     rq_watch(NULL, 0);
+    kernel_core_enter(core);
     g_gpu_wait_ns += plat_now_ns() - t0;
 }
 
@@ -292,6 +294,7 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
         if (stats < 0) stats = getenv("LARECOMP_LOG_PACE") != NULL;
         uint64_t behind = 0, w0 = 0;
         bool cur = false, untranslated = false;
+        bool core = kernel_core_leave();  // (the core's other threads run while this one waits for the GPU)
         if (seq && rq_on()) {
             if (stats) { cur = rq_fence_info(seq, &behind, &untranslated); w0 = plat_now_ns(); }
             seq = rq_wait_item(seq);  // translated and submitted; then its GPU work
@@ -299,6 +302,7 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
         t0 = plat_now_ns();
         rq_watch("SyncWait: the GPU, submission", seq);
         renderer_wait_seq(seq);
+        kernel_core_enter(core);
         static long tr_at = -1;  // (debug, rqueue.c LARECOMP_RQ_TRACE) the game thread's fence waits in those frames
         if (tr_at < 0) tr_at = getenv("LARECOMP_RQ_TRACE") ? atol(getenv("LARECOMP_RQ_TRACE")) : 0;
         extern uint64_t renderer_present_count(void);
@@ -1088,7 +1092,7 @@ static void present_pace(int interval) {
     extern volatile uint64_t g_vsync_period;  // (runtime/hle/vi.c: the display's vsync)
     uint64_t period = g_vsync_period * (uint64_t)interval, now = plat_now_ns();
     if (!next || now > next + period) next = now;
-    else if (next > now) plat_sleep_until_ns(next);
+    else if (next > now) { bool core = kernel_core_leave(); plat_sleep_until_ns(next); kernel_core_enter(core); }
     next += period;
 }
 

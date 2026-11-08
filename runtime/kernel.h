@@ -30,6 +30,11 @@ struct KThread {
     uint64_t entry, tlr, id;
     uint32_t handle;
     int prio, core;
+    // Core exclusion (kernel.c core_take / core_give): the guest core whose lock this thread holds (-1: none), and a
+    // lock to take back when the kernel call that gave it up returns.
+    int held_core;
+    bool core_pending;
+    bool pinned;  // one core in its mask (others float, as Horizon moves them between idle cores)
     bool cancel, in_sync_wait;
     bool is_main;  // the process's main thread (kernel_create_main_thread)
     // wait state (protected by g_klock)
@@ -69,6 +74,9 @@ extern KThread *g_waitlist;
 KObject *handle_get(uint32_t h);
 uint32_t kernel_new_handle(KObject *o);
 void kernel_signal(KObject *o);  // caller holds g_klock
+// Core exclusion (kernel.c): an HLE function's long host wait gives the guest thread's core to its other threads
+bool kernel_core_leave(void);
+void kernel_core_enter(bool had);
 KEvent *kernel_create_event_pair(uint32_t *writable, uint32_t *readable);
 KThread *kernel_current_thread(void);
 // (diagnostics) the "[hang]" dump (kernel.c): every guest thread and what it waits on, the kernel trace

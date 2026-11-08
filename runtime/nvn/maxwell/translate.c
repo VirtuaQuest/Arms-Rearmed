@@ -885,6 +885,57 @@ static void emit_tld4s(Ctx *c, uint64_t w) {
     write_tex_result(c, slot, call, 0xF, d0, d1, true, f16);
 }
 
+// TLD4 (full form): a gather. Fields as decoded by yuzu (texture_gather.cpp): destination gpr0 (the mask at 31..34
+// picks which of the four results go to consecutive registers), coordinates from gpr8 (an array's layer first),
+// meta registers from gpr20 (the offset with .AOFFI, then the depth reference with .DC at 50), type at 28..30
+// (2D, 2D array, cube, cube array), offset mode at 54..55 (none, AOFFI; PTP is not handled), component at 56..57.
+// ARMS's character fragment shaders (shadow filtering). GLSL only (the Vulkan backend).
+static void emit_tld4(Ctx *c, uint64_t w) {
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), m = (int)bits(w, 20, 8);
+    uint32_t index = (uint32_t)bits(w, 36, 13), mask = (uint32_t)bits(w, 31, 4);
+    int ttype = (int)bits(w, 28, 3), offmode = (int)bits(w, 54, 2), comp = (int)bits(w, 56, 2);
+    bool dc = bits(w, 50, 1);
+    if (!c->glsl) { fail(c, "tld4 (msl)"); return; }
+    if (offmode == 2) { fail(c, "tld4 .PTP"); return; }
+    int type, n;
+    bool array;
+    switch (ttype) {
+    case 2: type = TEXTYPE_2D, n = 2, array = false; break;
+    case 3: type = TEXTYPE_2D_ARRAY, n = 2, array = true; break;
+    case 6: type = TEXTYPE_CUBE, n = 3, array = false; break;
+    case 7: type = TEXTYPE_CUBE_ARRAY, n = 3, array = true; break;
+    default: fail(c, "tld4 texture type %d", ttype); return;
+    }
+    int slot = tex_slot(c, index, type, dc, array);
+    if (c->fail) return;
+    char co[3][24], lay[96] = "", off[64] = "", dref[24] = "", xs[700], P[900], call[1200];
+    int r = a;
+    if (array) { c->reg_used[r] = 1; snprintf(lay, sizeof lay, "float(min(uint(r%d), uint(tsize%d(0).z) - 1u))", r, slot); r++; }
+    for (int i = 0; i < n; i++) { c->reg_used[r + i] = 1; snprintf(co[i], sizeof co[i], "as_f(r%d)", r + i); }
+    int mr = m;
+    if (offmode == 1) { c->reg_used[mr] = 1; snprintf(off, sizeof off, "r%d", mr); mr++; }
+    if (dc) { c->reg_used[mr] = 1; snprintf(dref, sizeof dref, "as_f(r%d)", mr); mr++; }
+    if (n == 2) {
+        if (off[0])
+            snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(ivec2(int(%s << 26) >> 26, int(%s << 18) >> 26)) / vec2(tsize%d(0).xy))",
+                     co[0], co[1], off, off, slot);
+        else snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+        if (c->stage != STAGE_VERTEX) {
+            char t2[800];
+            snprintf(t2, sizeof t2, "uvs(%s, rscale[%d])", xs, slot + 1);
+            strcpy(xs, t2);
+            c->uses_rscale = true;
+        }
+    } else {
+        snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);  // (cube lookups take no offset)
+    }
+    if (array) snprintf(P, sizeof P, "vec%d(%s, %s)", n + 1, xs, lay);
+    else snprintf(P, sizeof P, "%s", xs);
+    if (dc) snprintf(call, sizeof call, "textureGather(t%d, %s, %s)", slot, P, dref);
+    else snprintf(call, sizeof call, "textureGather(t%d, %s, %d)", slot, P, comp);
+    write_tex_result(c, slot, call, mask, d, RZ, false, false);
+}
+
 // TEX (full form): coordinates from consecutive registers at gpr8, extra parameters at gpr20.
 static void emit_tex(Ctx *c, uint64_t w, bool bindless) {
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
@@ -1218,6 +1269,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_surface(c, w, true);
     } else if (OPM(0xdf00000000000000ull, 0xffc0000000000000ull)) {  // TLD4S
         emit_tld4s(c, w);
+    } else if (OPM(0xc838000000000000ull, 0xfc38000000000000ull)) {  // TLD4
+        emit_tld4(c, w);
     } else if (OPM(0xdf48000000000000ull, 0xfff8000000000000ull)) {  // TXQ
         uint32_t index = (uint32_t)bits(w, 36, 13);
         int qt = (int)bits(w, 22, 6);

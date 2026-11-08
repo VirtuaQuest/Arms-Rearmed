@@ -817,6 +817,40 @@ static void fill_state(Cpu *c) {
     *(uint32_t *)(s + 32) = 1;  // IsConnected
 }
 
+// GetNpadStates(State *out, int count, const NpadIdType &id) -> int (older SDKs, ARMS): the newest `count` samples,
+// newest first. Each call takes a sample (fill_state) into a short history per controller id, so a press and its
+// release show up between samples as they do from the console's ring of HID samples.
+#define NPAD_HIST 17
+static void fill_states(Cpu *c) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static uint8_t hist[9][NPAD_HIST][0x28];
+    static int nhist[9];
+    uint8_t *out = (uint8_t *)(uintptr_t)c->x[0];
+    int count = (int)c->x[1];
+    uint64_t idp = c->x[2];
+    uint32_t id = *(uint32_t *)(uintptr_t)idp;
+    int k = id < 8 ? (int)id : 8;  // (8: handheld / other)
+    uint8_t now[0x28];
+    uint64_t save0 = c->x[0], save1 = c->x[1];
+    c->x[0] = (uint64_t)(uintptr_t)now, c->x[1] = idp;
+    fill_state(c);
+    c->x[0] = save0, c->x[1] = save1;
+    pthread_mutex_lock(&lock);
+    memmove(hist[k][1], hist[k][0], (NPAD_HIST - 1) * 0x28);
+    memcpy(hist[k][0], now, 0x28);
+    if (nhist[k] < NPAD_HIST) nhist[k]++;
+    int n = count < nhist[k] ? count : nhist[k];
+    if (n < 0) n = 0;
+    if (out) memcpy(out, hist[k], (size_t)n * 0x28);
+    pthread_mutex_unlock(&lock);
+    c->x[0] = (uint64_t)n;
+}
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", hid_states_fullkey) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj", hid_states_dual) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj", hid_states_left) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj", hid_states_handheld) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj", hid_states_right) { fill_states(c); }
+
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", hid_state_fullkey) { fill_state(c); }
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", hid_state_dual) { fill_state(c); }
 HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", hid_state_left) { fill_state(c); }
