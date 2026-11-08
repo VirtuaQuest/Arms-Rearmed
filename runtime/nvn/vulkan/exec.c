@@ -2667,7 +2667,7 @@ static bool ct_on(void) {
 }
 static void ct_draw(Prog *pr, const char *what) {
     LOG("[ct] %s fs %016llx rt", what, (unsigned long long)g_cur_fs_hash);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" c%d=%p/%#x", i, (void *)st.rt.color[i], st.rt.color[i]->format);
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" c%d=%p@%llx/%#x", i, (void *)st.rt.color[i], (unsigned long long)st.rt.color[i]->addr, st.rt.color[i]->format);
     if (st.rt.depth) LOG(" d=%p/%#x%s", (void *)st.rt.depth, st.rt.depth->format, st.ds[0] && st.ds[1] ? "W" : "");
     LOG(" cm %08x vp %.0f %.0f %.0f %.0f sc %d %d %d %d | tex", st.channel_mask, st.viewport[0][0], st.viewport[0][1], st.viewport[0][2],
         st.viewport[0][3], st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3]);
@@ -2675,7 +2675,7 @@ static void ct_draw(Prog *pr, const char *what) {
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < (infos[sg] ? infos[sg]->ntex : 0); i++) {
             NvnTexture *t = shader_texture_object(sg, &infos[sg]->tex[i]);
-            if (t) LOG(" %s%p/%#x", sg ? "" : "v:", (void *)t, t->format);
+            if (t) LOG(" %s%p@%llx/%#x", sg ? "" : "v:", (void *)t, (unsigned long long)t->addr, t->format);
         }
     LOG("\n");
 }

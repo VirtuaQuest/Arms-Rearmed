@@ -529,6 +529,29 @@ static void live_remove(TexBackend *b) {
     b->reg = 0;
 }
 
+// ---- shared images (vk.h TexBackend.users): texture objects describing the same memory the same way get one image.
+// A table of the shared backends by key (linear probe, small: textures with memory addresses only).
+static TexBackend **g_share;
+static size_t g_share_n, g_share_cap;
+static void share_key_of(const NvnTexture *t, uint64_t k[4]) {
+    k[0] = t->addr;
+    k[1] = (uint64_t)t->format | (uint64_t)t->target << 16 | (uint64_t)(t->samples & 0xFF) << 24 | (uint64_t)t->levels << 32;
+    k[2] = (uint64_t)t->width | (uint64_t)t->height << 20 | (uint64_t)t->depth << 40;
+    k[3] = t->stride;
+}
+static TexBackend *share_find(const uint64_t k[4]) {
+    for (size_t i = 0; i < g_share_n; i++)
+        if (!memcmp(g_share[i]->share_key, k, sizeof g_share[i]->share_key)) return g_share[i];
+    return NULL;
+}
+static void share_add_user(TexBackend *b, NvnTexture *t) {
+    if (b->nusers == b->cap_users) {
+        b->cap_users = b->cap_users ? b->cap_users * 2 : 4;
+        b->users = realloc(b->users, sizeof *b->users * (size_t)b->cap_users);
+    }
+    b->users[b->nusers++] = t;
+}
+
 static TexBackend *tex_backend(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
@@ -538,26 +561,55 @@ static TexBackend *tex_backend(NvnTexture *t) {
         }
         return b;
     }
+    uint64_t k[4];
+    share_key_of(t, k);
+    static int noshare = -1;  // LARECOMP_VK_NO_TEX_SHARE=1: an image per texture object, as before
+    if (noshare < 0) noshare = getenv("LARECOMP_VK_NO_TEX_SHARE") != NULL;
+    if (t->addr && !noshare && (b = share_find(k))) {
+        share_add_user(b, t);
+        t->backend = b;
+        static int nlog;
+        if (nlog++ < 8) LOG("[vk] texture %ux%u fmt %#x at %llx: shares the image of an earlier texture object (%d users)\n",
+                            t->width, t->height, t->format, (unsigned long long)t->addr, b->nusers);
+        return b;
+    }
     vk_collect_dead();
     b = calloc(1, sizeof *b);
     b->scalable = tex_scalable(t);
     create_image(t, b);
     t->backend = b;
     live_add(t, b);
+    share_add_user(b, t);
+    if (t->addr && !noshare) {
+        memcpy(b->share_key, k, sizeof k);
+        if (g_share_n == g_share_cap) {
+            g_share_cap = g_share_cap ? g_share_cap * 2 : 256;
+            g_share = realloc(g_share, sizeof *g_share * g_share_cap);
+        }
+        g_share[g_share_n++] = b;
+    }
     return b;
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
-    if (b) {
-        extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
-        vk_alias_texture_destroyed(t);
-        live_remove(b);
-        destroy_image(b);
-        free(b->pending_rgba);
-        free(b);
-    }
     t->backend = NULL;
+    if (!b) return;
+    extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
+    vk_alias_texture_destroyed(t);
+    for (int i = 0; i < b->nusers; i++)
+        if (b->users[i] == t) { b->users[i] = b->users[--b->nusers]; break; }
+    if (b->nusers > 0) {  // (others still use the image: the reboot list names one of them now)
+        if (b->reg) g_live[b->reg - 1] = b->users[0];
+        return;
+    }
+    for (size_t i = 0; i < g_share_n; i++)
+        if (g_share[i] == b) { g_share[i] = g_share[--g_share_n]; break; }
+    live_remove(b);
+    destroy_image(b);
+    free(b->pending_rgba);
+    free(b->users);
+    free(b);
 }
 
 // Reboot (device.c backend_reset; GPU idle): every game texture and its views go.

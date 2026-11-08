@@ -30,8 +30,7 @@ movie library (host code, `runtime/hle/movie.c`); there is no glslc module (`GLS
 
 **Status (end of 2026-11-08):** boots, runs the title screen, the attract-mode fights and the menus through to
 character select at a locked 60 fps on an RTX 3060 / i7-11700F, with keyboard, mouse and controller input; runs of
-2+ minutes end without a crash or stall. **The fighters are drawn black in fights and not at all at character select**
-(stages, effects, UI and movies are right): see "Open: the fighters" below.
+2+ minutes end without a crash or stall. Fighters, stages, effects, UI and movies render (see "Fixed: the fighters").
 
 ## Getting it stable (2026-11-08, second part)
 
@@ -88,18 +87,26 @@ Each of these was found with the tools listed after it, in this order; each fix 
   CONTROLS, ABOUT. Original look: drawn shapes, springs and halftone, Baloo 2 (OFL). Test hooks:
   `ARMS_LAUNCHER_SHOT`, `ARMS_LAUNCHER_TAB`, `ARMS_LAUNCHER_INSTALL`, `ARMS_LAUNCHER_LOG`.
 
-## Open: the fighters
+## Fixed: the fighters (2026-11-08, third part)
 
-In fights the fighters are black silhouettes; at character select the selected fighter isn't drawn at all. Findings:
-- Their draws are the MRT ones: colour (format 0x3f) + an R8 mask (0x1) + depth, fragment shaders such as
-  `e56d0feb636dd73d` (fs 726ca51000), `65f540cc458eb61d`, `90d0a91e7c318476` (`LARECOMP_LOG_FSHASH=2` maps hashes
-  to code addresses; `LARECOMP_SAVE_MSL=1 LARECOMP_SHADER_PREP=0 LARECOMP_VK_NO_SPIRV_CACHE=1` saves their GLSL).
-  They sample up to 12 textures, including a cube-map array (image-based lighting) and a 2D-array shadow map.
-- Not the cause: the shadow compare (`LARECOMP_NO_SHADOW=1` changes nothing), front-face winding (flipping it blacks
-  out everything), skipping those MRT shaders (the silhouettes stay: they come from another pass).
-- Not yet checked: the cube-map array's contents (a probe the game renders?), the R8 mask's use in the composite
-  (`ae216330c4409988`, which samples it), local memory / `SetShaderScratchMemory` (unimplemented) in those shaders.
-  A RenderDoc capture of one fight frame is the next step.
+The fighters were black in fights and missing at character select. Per-pass dumps (`LARECOMP_RENDER_THREAD=0
+LARECOMP_DEBUG_FRAME=<frame>`: every pass's first colour target to build/pass_NNN.png) showed them rendered correctly
+in the scene pass and lost in two later steps:
+- **The composite** (fs `ae216330c4409988`) grades fighter pixels (R8 mask == 1) with a 3D LUT the game renders, an
+  8x8x8 target drawn one slice at a time through layer views. The Vulkan backend refused 3D colour attachments
+  ("not used by the game"), so that LUT stayed black. 3D colour images are now 2D-array compatible and a slice
+  renders through a 2D view (`textures.c` vk_view).
+- **Character select** shows the fighter through a UI pane that samples the frame copied into a texture - a
+  different NVNtexture object over the same memory than the one the copy wrote (ARMS makes new texture objects each
+  frame). Each object had its own VkImage, so the pane read an empty one. Texture objects that describe the same
+  memory the same way (address, format, target, size, levels, samples, stride) now share one image, reference
+  counted (`textures.c` share_*; `LARECOMP_VK_NO_TEX_SHARE=1` turns it off).
+- `nvnCommandBufferSetDepthClamp` is applied (pipeline key, `poly_fill` bit 1).
+Debugging switches added for this: `LARECOMP_LOG_DRAWSTATE=<fs hash>[,...]`, `LARECOMP_NO_DEPTH_TEST_FS=<fs hash>`,
+`LARECOMP_LOG_FSHASH=2`; the copy trace prints each texture's memory address.
+
+**Runtime DLLs:** `make dlls` (part of `make all`, and of the launcher's build step) copies the MSYS2 DLLs the game
+and the launcher need next to them, so they start outside an MSYS2 shell.
 
 **Also not handled yet:** `AddControlMemory`, `SetShaderScratchMemory`, `SetDepthClamp`, `SetTiledCacheAction/TileSize`
 are stubs; `prepo:u` is a logging stub; motion controls (six-axis) report nothing (button controls only).

@@ -6,9 +6,8 @@ Windows x86-64 program, built on [LAS Recomp](https://github.com/peiikai/LASReco
 runtime takes the console's place (graphics through Vulkan, audio, input, files, services).
 
 **Status: in progress.** The game boots, runs its title screen, its attract-mode fights and its menus (through to
-character select) at a locked 60 fps, with keyboard, mouse and controller input, for minutes without crashing.
-**Known issue: the fighters are drawn black (in fights) or not at all (character select)**: the stages, effects and
-menus render correctly. Details, findings and next steps: [docs/CHANGES.md](docs/CHANGES.md).
+character select) at a locked 60 fps, with keyboard, mouse and controller input, for minutes without crashing;
+fighters, stages, effects and menus render correctly. Details and next steps: [docs/CHANGES.md](docs/CHANGES.md).
 
 No game files are included or ever committed. You need your own legally obtained copy of the game, its update and
 the keys from your own console.
@@ -21,7 +20,8 @@ the keys from your own console.
    (as LAS Recomp's `tools/setup_windows.ps1`).
 2. Install [Python 3.12](https://www.python.org) (the `py` launcher).
 3. Build the launcher once, from Git Bash or the MSYS2 UCRT64 shell in this folder:
-   `export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"; make launcher`.
+   `export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"; make launcher dlls` (`dlls` copies the MSYS2 DLLs
+   next to it, so it starts from Explorer).
 4. Run `build\armslauncher.exe`. On **GAME FILES**, choose your base game (XCI or NSP), the 5.4.0 update (NSP) and
    your `prod.keys`, then **INSTALL**: it makes the Python environment, extracts the game's code, recompiles it and
    builds the PC version (about 10 minutes the first time). Then **FIGHT!** on the PLAY page.

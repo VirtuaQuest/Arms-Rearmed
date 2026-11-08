@@ -117,6 +117,12 @@ typedef struct TexBackend {
     VkFormat view_fmt[2];
     uint8_t nview_fmt;
     VkFormat storage_fmt;  // the format of its storage image views (SUST / SULD), VK_FORMAT_UNDEFINED: no storage usage
+    // Shared by the NVN texture objects that describe the same memory the same way (textures.c share_*): on the
+    // Switch they are one image. ARMS makes new texture objects over the same memory every frame and renders through
+    // one, samples through another (the character select fighter).
+    struct NvnTexture **users;
+    int nusers, cap_users;
+    uint64_t share_key[4];  // (addr; format, target, samples, levels; width, height, depth; stride): 0 = not shared
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
