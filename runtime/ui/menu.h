@@ -16,6 +16,11 @@ typedef union SDL_Event SDL_Event;
 // Main (UI) thread: returns true if the event was consumed by the menu (the game must not see it).
 bool menu_handle_event(const SDL_Event *e);
 bool menu_is_open(void);
+// Any thread: a short message at the bottom of the screen for secs seconds (things the game would show with a system
+// dialog the runtime doesn't have, such as "no connection"). A newer one replaces it.
+void menu_notice(const char *text, double secs);
+// Frames shown so far (0 before the first: the game's own checks while it starts).
+uint64_t menu_frames_shown(void);
 // Main thread: apply window requests (fullscreen) made from the menu.
 void menu_apply_window_requests(void *sdl_window);
 

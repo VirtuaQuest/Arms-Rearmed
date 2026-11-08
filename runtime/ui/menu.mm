@@ -73,6 +73,41 @@ static void push(const QEvent &e) {
 }
 
 bool menu_is_open(void) { return g_open.load(); }
+
+// ---- notices (menu_notice): one line of text at the bottom of the screen for a few seconds
+static pthread_mutex_t g_notice_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_notice[256];
+static std::atomic<uint64_t> g_notice_until{0};  // SDL_GetTicks() ms (0: none)
+void menu_notice(const char *text, double secs) {
+    pthread_mutex_lock(&g_notice_lock);
+    snprintf(g_notice, sizeof g_notice, "%s", text);
+    pthread_mutex_unlock(&g_notice_lock);
+    g_notice_until.store(SDL_GetTicks() + (uint64_t)(secs * 1000));
+}
+static bool notice_wanted(void) { return SDL_GetTicks() < g_notice_until.load(); }
+static std::atomic<uint64_t> g_frames_shown{0};  // menu_render calls: one per frame shown
+uint64_t menu_frames_shown(void) { return g_frames_shown.load(); }
+static void notice_draw(ImVec2 size, ImFont *font, float scale) {
+    char text[256];
+    pthread_mutex_lock(&g_notice_lock);
+    memcpy(text, g_notice, sizeof text);
+    pthread_mutex_unlock(&g_notice_lock);
+    // fades out over its last half second
+    double left = (double)(g_notice_until.load() - SDL_GetTicks()) / 1000.0;
+    float a = left < 0.5 ? (float)(left / 0.5) : 1.0f;
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y - 60 * scale), 0, ImVec2(0.5f, 1));
+    ImGui::SetNextWindowBgAlpha(0.8f * a);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, a);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * scale, 16 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12 * scale);
+    ImGui::Begin("##notice", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                       ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
+    if (font) ImGui::PushFont(font);
+    ImGui::TextUnformatted(text);
+    if (font) ImGui::PopFont();
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+}
 static void set_open(bool open);
 extern "C" void menu_test_open(void) {
     set_open(true);
@@ -909,6 +944,7 @@ void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> targ
 void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
+    g_frames_shown.fetch_add(1);
     bool open = g_open.load();
     bool inv = !open && inventory_overlay_wanted();
     bool trk = !open && tracker_overlay_wanted();
@@ -917,7 +953,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool kbd = g_kbd.load() == 1;
     bool race = race_overlay_wanted();  // (run timer, race seed hash: race_overlay.mm)
     bool flyin = pickup_flyin_wanted() && !open;  // (a silent pickup's card)
-    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin)) {
+    bool notice = notice_wanted();                // (menu_notice)
+    if (!render_needed(open, kbd, inv, trk, trkd, chaos, race, flyin) && !notice) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         g_ov_same = 0;  // (shown again: built afresh first)
         return;
@@ -942,7 +979,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         fps_note(now, io.DeltaTime);
         char rk[64];
         // (only the FPS counter and the run timer; input only reaches ImGui while the menu or the name entry is up)
-        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && race_overlay_key(rk, sizeof rk)) {
+        if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && !notice && race_overlay_key(rk, sizeof rk)) {
             pthread_mutex_lock(&q_lock);
             bool events = !q_events.empty();
             pthread_mutex_unlock(&q_lock);
@@ -1009,6 +1046,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (race) race_overlay_draw(io.DisplaySize, g_menu_font_big, scale);
+    if (notice) notice_draw(io.DisplaySize, g_menu_font, scale);
     if (flyin) pickup_flyin_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont(), scale);
     if (trk) tracker_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     if (chaos) chaos_overlay_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());

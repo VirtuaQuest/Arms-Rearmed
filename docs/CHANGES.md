@@ -111,6 +111,39 @@ and the launcher need next to them, so they start outside an MSYS2 shell.
 **Also not handled yet:** `AddControlMemory`, `SetShaderScratchMemory`, `SetDepthClamp`, `SetTiledCacheAction/TileSize`
 are stubs; `prepo:u` is a logging stub; motion controls (six-axis) report nothing (button controls only).
 
+## Smooth start, no pop-in, every mode tested (2026-11-08, fourth part)
+
+Reported after a play through the tutorial: 3-4 fps while the game started, and fighters / models appearing a moment
+after they should.
+
+- **Shaders are prepared before the game shows.** Extraction (`tools/nsp_extract.py` extract_shaders) unpacks the
+  game's shader code (BNSH in the Yaz0 SARCs under Shader/, Layout/, Effect/, System/) into `extracted/shaders`; the
+  startup preparation indexes it and builds the pipeline variants in `runtime/nvn/shader_variants.txt` (1870
+  records: shader hashes and pipeline state, no game data) plus the player's own `cache/shader_seen.txt`, before the
+  window shows the game (the title says "preparing shaders N%"). Cold cache: ~1790 pipelines in ~12 s on an
+  RTX 3060; warm: ~4 s. `LARECOMP_PREP_ONLY=1` builds the caches and quits: the launcher's INSTALL / REBUILD run it as
+  "Prepare the shaders".
+- **No pop-in.** Draws whose program or pipeline is still building wait for it (`exec.c` prog_wait, up to 3 s; the
+  recorder waits for pipelines, `LARECOMP_VK_RECORDER_WAIT_PIPES` on by default) instead of being skipped for a few
+  frames. `LARECOMP_SKIP_BUILDING=1` is the old behaviour.
+- **Every mode played** with scripted input (`LARECOMP_HOST_INPUT`, contact sheets of `LARECOMP_SCREENSHOT_EVERY`):
+  Grand Prix (a round to KO), Versus Fight, Team Fight, V-Ball, Hoops, Skillshot, Hedlok Scramble, 1-on-100,
+  ARMS Test, Training (the lessons), and the menu screens Badges, Gallery, Replays (the test matches were recorded),
+  Dashboard / Stats, Get ARMS (asks for coins, as it should with this save) and Ranked ("win the Grand Prix to
+  unlock", as it should). All run at 60 fps without errors. The variants these runs added (145) are in the shipped
+  list: Hedlok Scramble went from 121 first-visit shaders on a fresh cache to 4, and on a cold cache a new
+  combination in play costs 30-50 ms once instead of 120-200 ms.
+- **Local crashed the game.** `ldn:u` (local wireless) fell to the generic logging stub, which answered
+  CreateUserLocalCommunicationService with no object: a null session. `runtime/services/net.c` now has ldn:u as on a
+  console in airplane mode (Initialize: result 203-23, GetState: Error); the game shows its empty local lobby list.
+- **Online and system screens say why they go back.** Party Match / Friends ask for a connection (`nifm` answers
+  "none", now logged), Help opens the web browser, the eShop screens are library applets: none exist here, and the
+  game went back without a word. `menu_notice` (`runtime/ui/menu.mm`) shows a 5-second line at the bottom of the
+  screen ("Online play isn't available in ARMS Recomp.", local wireless, web pages, eShop). The game's own quiet
+  connection check while it starts shows nothing.
+- **Crash dialog:** `crash_explain.c` compared the game's file count with MUA3's (3836), so every ARMS crash said "Your
+  game files are incomplete". The count isn't checked for ARMS (its versions differ; 5.4.0 has 3449 files).
+
 What this project changed relative to [LAS Recomp](https://github.com/peiikai/LASRecomp) (its recompiler and Switch
 runtime), why, and where. It also lists the debugging switches, the test routes, the known gaps and the next steps.
 It started as DOAX3 Recomp (the sections from "Project setup" to "Test routes" are that work, which MUA3 inherits:

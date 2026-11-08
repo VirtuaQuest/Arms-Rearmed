@@ -5,9 +5,12 @@ Windows x86-64 program, built on [LAS Recomp](https://github.com/peiikai/LASReco
 (by way of MUA3 Recomp and DOAX3 Recomp). The game's ARM64 code is translated to C and compiled for the PC; a Switch
 runtime takes the console's place (graphics through Vulkan, audio, input, files, services).
 
-**Status: in progress.** The game boots, runs its title screen, its attract-mode fights and its menus (through to
-character select) at a locked 60 fps, with keyboard, mouse and controller input, for minutes without crashing;
-fighters, stages, effects and menus render correctly. Details and next steps: [docs/CHANGES.md](docs/CHANGES.md).
+**Status: playable offline.** Every offline mode has been played through at 60 fps with keyboard, mouse and
+controller input: Grand Prix, Versus (Fight, Team Fight, V-Ball, Hoops, Skillshot, Hedlok Scramble, 1-on-100,
+ARMS Test), Training, and the Badges, Gallery, Replays, Dashboard and Get ARMS screens. Shaders are prepared before
+the game appears (a few seconds; about 12 s the first time after an install), so there is no stutter while it
+starts and no model shows up late. Online play, local wireless, the web manual and the eShop aren't available: the
+game says so and stays in its menus. Details: [docs/CHANGES.md](docs/CHANGES.md).
 
 No game files are included or ever committed. You need your own legally obtained copy of the game, its update and
 the keys from your own console.

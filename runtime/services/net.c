@@ -5,6 +5,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../ui/menu.h"
 
 // nifm results (module 110): the connection test failed / no network
 #define NIFM_RESULT_NO_CONNECTION (110u | (3127u << 9))
@@ -69,8 +70,19 @@ SERVICE("nifm:s", nifm_s) { nifm_static(s, req, resp); }
 // handling that would show the system's "couldn't connect" applet is done at once, as if the player had closed it.
 // (On a console that applet comes from the applet manager; the runtime has no library applets.)
 HLE_FUNC("_ZN2nn4nifm10InitializeEv", nifm_api_initialize) { c->x[0] = 0; }
-HLE_FUNC("_ZN2nn4nifm18IsNetworkAvailableEv", nifm_api_available) { c->x[0] = 0; }
-HLE_FUNC("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", nifm_api_submit_wait) { (void)c; }
+HLE_FUNC("_ZN2nn4nifm18IsNetworkAvailableEv", nifm_api_available) {
+    static int nlog;
+    if (nlog++ < 20) LOG("[nifm] IsNetworkAvailable: no\n");
+    c->x[0] = 0;
+}
+HLE_FUNC("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", nifm_api_submit_wait) {
+    (void)c;
+    static int nlog;
+    if (nlog++ < 20) LOG("[nifm] SubmitNetworkRequestAndWait: no connection\n");
+    // The player asked to go online (Party Match, Friends, ...): on a console the system's "couldn't connect" dialog
+    // would say why the game goes back. (Not the game's own quiet check while it starts.)
+    if (menu_frames_shown() > 0) menu_notice("Online play isn't available in ARMS Recomp.", 5);
+}
 HLE_FUNC("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", nifm_api_handle_error) {
     static int nlog;
     if (nlog++ < 3) LOG("[nifm] HandleNetworkRequestErrorResult: no network (the error applet is skipped)\n");
@@ -99,6 +111,44 @@ static void bsd(Service *s, IpcReq *req, IpcResp *resp) {
 }
 SERVICE("bsd:u", bsd_u) { bsd(s, req, resp); }
 SERVICE("bsd:s", bsd_s) { bsd(s, req, resp); }
+
+// ------------------------------------------------------------------ ldn (local wireless)
+// Local play between consoles, as on a console in airplane mode: the service is there, Initialize says local
+// communication is off, and the game shows its own message and stays in the menu. (Before this, the generic stub
+// answered CreateUserLocalCommunicationService without an object and "Local" crashed the game.)
+#define LDN_RESULT(desc) (203u | ((uint32_t)(desc) << 9))
+#define LDN_RESULT_AIRPLANE_MODE LDN_RESULT(23)
+#define LDN_RESULT_BAD_STATE LDN_RESULT(32)
+enum { LDN_STATE_NONE = 0, LDN_STATE_INITIALIZED = 1, LDN_STATE_ERROR = 6 };
+
+static void ldn_user(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s;
+    switch (req->cmd) {
+    case 0: OUT(uint32_t, 0) = LDN_STATE_ERROR; resp_size(resp, 4); break;  // GetState: never initialised
+    case 100: {  // AttachStateChangeEvent: an event that never fires (the state never changes)
+        uint32_t w, r;
+        kernel_create_event_pair(&w, &r);
+        resp->copy_handles[resp->ncopy++] = r;
+        break;
+    }
+    case 400: case 402:  // Initialize, InitializeSystem2
+        LOG("[ldn] Initialize: local wireless is off (as in airplane mode)\n");
+        menu_notice("Local wireless play isn't available in ARMS Recomp.", 5);
+        resp->result = LDN_RESULT_AIRPLANE_MODE;
+        break;
+    case 401: break;  // Finalize
+    default:          // scan, open an access point or a station, network info...: not in this state
+        LOG("[ldn] IUserLocalCommunicationService cmd %u -> bad state\n", req->cmd);
+        resp->result = LDN_RESULT_BAD_STATE;
+    }
+}
+SERVICE("ldn:u", ldn_u) {
+    (void)s;
+    if (req->cmd == 0)  // CreateUserLocalCommunicationService
+        ipc_return_object(resp, service_new("ldn:IUserLocalCommunicationService", ldn_user, NULL));
+    else
+        LOG("[ldn] IUserServiceCreator cmd %u (ok)\n", req->cmd);
+}
 
 // ------------------------------------------------------------------ ssl
 static void ssl_context(Service *s, IpcReq *req, IpcResp *resp) {
