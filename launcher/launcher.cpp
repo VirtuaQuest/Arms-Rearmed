@@ -374,7 +374,7 @@ static void start_steps(bool extract, bool recompile, bool build) {
     if (build) {
         int n = SDL_GetNumLogicalCPUCores();
         g_steps.push_back({"Build the PC version", make + " -j" + std::to_string(n > 0 ? n : 8) +
-                                                    " PY=.venv/Scripts/python.exe build/armsrecomp.exe build/armsgame.dll", g_root, true});
+                                                    " PY=.venv/Scripts/python.exe build/armsrecomp.exe build/armsgame.dll build/.dlls", g_root, true});
     }
     {
         std::lock_guard<std::mutex> lk(g_log_mu);
@@ -398,6 +398,15 @@ static std::string launch_game(void) {
     if (!is_dir(g_root + "extracted")) return "No extracted game files: set them up first (GAME FILES).";
 #ifdef _WIN32
     SetEnvironmentVariableA("LARECOMP_DATA_ROOT", g_root.c_str());
+    {   // the build copies the runtime DLLs next to the game (make dlls); MSYS2's own folder is the fallback
+        static bool once;
+        if (!once) {
+            once = true;
+            char *old = getenv("PATH");
+            std::string p = g_root + "build;" + std::string(p_msys) + "\\ucrt64\\bin;" + (old ? old : "");
+            SetEnvironmentVariableA("PATH", p.c_str());
+        }
+    }
     std::string cmd = q(exe) + " extracted";
     STARTUPINFOA si = {};
     si.cb = sizeof si;

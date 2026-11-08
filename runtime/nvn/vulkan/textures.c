@@ -400,6 +400,8 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkImageCreateFlags flags = 0;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    // 3D colour targets: rendered slice by slice through 2D views (ARMS's 8x8x8 colour-grading LUTs: vk_view)
+    if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     // shader image stores / loads (SUST / SULD): in the format itself, or an sRGB format's UNORM twin (no sRGB storage)
     b->storage_fmt = depthfmt || samples > 1 ? VK_FORMAT_UNDEFINED : storage_format(vf);
     if (b->storage_fmt) {
@@ -1089,9 +1091,16 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
     if (render) {
-        VkImageViewType type = b->base_type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;  // (3D render targets: not used by the game)
-        return vk_image_view(b, type, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
+            // a slice of a 3D image as a colour attachment: a 2D view of that depth slice (the image was made
+            // 2D-array compatible). ARMS renders its fighters' 8x8x8 colour-grading LUT a slice at a time; without
+            // this the LUT stayed black, and so did every fighter pixel (the composite picks that LUT where the
+            // fighter mask is 1).
+            if (b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return VK_NULL_HANDLE;
+            uint32_t slice = v && (v->setmask & 2) ? v->min_layer : 0, d = b->depth >> lv0 ? b->depth >> lv0 : 1;
+            return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, slice < d ? slice : d - 1, 1, IDENTITY, b->aspect);
+        }
+        return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
     if (int32_float_alias(fmt) && !g_vk.lean_usage) fmt = int32_float_alias(fmt);

@@ -953,6 +953,7 @@ static struct {
     bool prim_restart;
     uint32_t restart_index;
     uint64_t copy_row_stride, copy_image_stride;
+    bool depth_clamp;  // (nvnCommandBufferSetDepthClamp: in the pipeline key, poly_fill bit 1)
 } st;
 
 uint32_t nvn_window_origin(void);
@@ -2487,7 +2488,8 @@ static void pipe_ci_fill(PipeCI *c, const PipeKey *k) {
                                                      .topology = topo_class_base(k->topo_class)};
     c->vs = (VkPipelineViewportStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
     c->rs = (VkPipelineRasterizationStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                     .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
+                                                     .polygonMode = k->poly_fill & 1 ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE,
+                                                     .depthClampEnable = (k->poly_fill & 2) != 0, .lineWidth = 1};
     c->ms = (VkPipelineMultisampleStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                    .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
     c->ds = (VkPipelineDepthStencilStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -5681,7 +5683,7 @@ static void rec_from_state(ShaderRec *r, bool flip_x, uint32_t mode) {
     }
     r->a2c = st.ms[0xC] != 0;
     r->topo = shader_topo_class(mode);
-    r->poly_fill = st.poly[2] != 1;
+    r->poly_fill = (st.poly[2] != 1) | (st.depth_clamp ? 2 : 0);  // (bit 0: filled, bit 1: depth clamp)
 }
 
 // LARECOMP_PREP_CHECK=1 (diagnostics): a pipeline the game builds although its shaders were prepared - logs the
@@ -6055,7 +6057,9 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- depth / stencil (dynamic)
     static int nodt = -1;
     if (nodt < 0) nodt = getenv("LARECOMP_NO_DEPTH_TEST") != NULL;
-    bool dt = st.ds[0] && !nodt && pass_depth;
+    static uint64_t nodt_hash = ~0ull;  // (debug) LARECOMP_NO_DEPTH_TEST_FS=<fs hash>: that shader's draws only
+    if (nodt_hash == ~0ull) nodt_hash = getenv("LARECOMP_NO_DEPTH_TEST_FS") ? strtoull(getenv("LARECOMP_NO_DEPTH_TEST_FS"), NULL, 16) : 0;
+    bool dt = st.ds[0] && !nodt && pass_depth && !(nodt_hash && nodt_hash == g_cur_fs_hash);
     if (ss_need(SS_DT, ss.dt == (VkBool32)dt)) { ss.dt = dt; rec_CmdSetDepthTestEnable(cb, dt); }
     VkBool32 dw = dt && st.ds[1];
     if (ss_need(SS_DW, ss.dw == dw)) { ss.dw = dw; rec_CmdSetDepthWriteEnable(cb, dw); }
@@ -6087,6 +6091,30 @@ static void draw_(CmdRec *r, bool indexed) {
             rec_CmdSetStencilWriteMask(cb, face, v[5]);
             rec_CmdSetStencilReference(cb, face, v[6]);
         }
+    }
+    {   // (debug) LARECOMP_LOG_DRAWSTATE=<fs hash>[,<fs hash>]: those draws' depth / stencil / raster state (first 40)
+        static int n = -1;
+        static uint64_t want[4];
+        if (n < 0) {
+            n = 0;
+            const char *e = getenv("LARECOMP_LOG_DRAWSTATE");
+            for (int i = 0; e && *e && i < 4; i++) { want[i] = strtoull(e, (char **)&e, 16); while (*e == ',') e++; }
+        }
+        bool hit = false;
+        for (int i = 0; i < 4; i++) hit |= want[i] && want[i] == g_cur_fs_hash;
+        if (hit && n < 600 && st.ubuf[1][3].addr && st.ubuf[1][3].size >= 176) {
+            const float *u = (const float *)(uintptr_t)(st.ubuf[1][3].addr + 160);
+            LOG("[drawstate] fs %016llx fs cb3[10] = %g %g %g %g, blend0 %02x%02x%02x%02x%02x%02x%02x%02x cmask %08x clamp %d\n",
+                (unsigned long long)g_cur_fs_hash, u[0], u[1], u[2], u[3], st.blend[0][0], st.blend[0][1], st.blend[0][2],
+                st.blend[0][3], st.blend[0][4], st.blend[0][5], st.blend[0][6], st.blend[0][7], st.channel_mask, st.depth_clamp);
+        }
+        if (hit && n++ < 600)
+            LOG("[drawstate] fs %016llx ds %02x %02x %02x %02x %02x %02x%02x%02x ref %u/%u mask %x/%x vmask %x/%x pass d%d s%d "
+                "depthfmt %#x range %.3f..%.3f vp %.0f,%.0f %.0fx%.0f cull %u ff %u dm1 %d\n", (unsigned long long)g_cur_fs_hash,
+                st.ds[0], st.ds[1], st.ds[2], st.ds[3], st.ds[4], st.ds[5], st.ds[6], st.ds[7], st.stencil_ref[0], st.stencil_ref[1],
+                st.stencil_mask[0], st.stencil_mask[1], st.stencil_vmask[0], st.stencil_vmask[1], (int)pass_depth, (int)pass_stencil,
+                st.rt.depth ? st.rt.depth->format : 0, st.depth_range[0][0], st.depth_range[0][1], st.viewport[0][0],
+                st.viewport[0][1], st.viewport[0][2], st.viewport[0][3], st.poly[0], st.poly[1], (int)vkey.depth_minus_one);
     }
     if (ss_need(SS_BC, !memcmp(ss.bc, st.blend_color, sizeof ss.bc))) { memcpy(ss.bc, st.blend_color, sizeof ss.bc); rec_CmdSetBlendConstants(cb, st.blend_color); }
 
@@ -7520,6 +7548,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_SET_POLYGON_OFFSET: memcpy(st.poly_offset, r->f, sizeof st.poly_offset); break;
+        case CMD_SET_DEPTH_CLAMP: st.depth_clamp = r->x[0] != 0; break;
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
         case CMD_CLEAR_COLOR: {

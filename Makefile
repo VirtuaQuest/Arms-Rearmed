@@ -131,9 +131,21 @@ $(LAUNCHER): $(B)/launcher/launcher.o $(LAUNCHER_IMGUI) $(ICON_RES) $(if $(ICON_
 launcher: $(LAUNCHER)
 all: $(LAUNCHER)
 
+# ---- the MSYS2 runtime DLLs the game and the launcher need, copied next to them, so they start outside an MSYS2 shell
+# (from Explorer or the launcher): whatever ldd finds under /ucrt64 (SDL3, FFmpeg, shaderc, libstdc++...)
+DLL_STAMP := $(B)/.dlls
+$(DLL_STAMP): $(wildcard $(EXE) $(LAUNCHER))
+	@for f in $$(ldd $^ | grep -io '/ucrt64/bin/[^ ]*\.dll' | sort -u); do cp -u "$$f" $(B)/; done
+	@echo "runtime DLLs copied into $(B)/"
+	@touch $@
+dlls: $(EXE) $(LAUNCHER)
+	@rm -f $(DLL_STAMP)
+	@$(MAKE) --no-print-directory $(DLL_STAMP)
+all: $(DLL_STAMP)
+
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 
 clean:
 	rm -rf $(B)
 
-.PHONY: all gen runtime-objs clean launcher
+.PHONY: all gen runtime-objs clean launcher dlls

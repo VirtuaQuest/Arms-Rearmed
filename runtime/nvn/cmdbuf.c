@@ -451,6 +451,16 @@ NVN(nvnCommandBufferSetRenderTargets) {
     const uint64_t *colors = (const uint64_t *)(uintptr_t)s.x[2], *views = (const uint64_t *)(uintptr_t)s.x[3];
     for (int i = 0; i < n; i++) {
         rt.tex[i] = (uint64_t)(uintptr_t)(colors ? nvn_texture_of(colors[i], "SetRenderTargets") : NULL);
+        {   // (diagnostics) 3D / array colour targets: layered rendering
+            NvnTexture *lt = (NvnTexture *)(uintptr_t)rt.tex[i];
+            static int nlog;
+            if (lt && (lt->target == 2 || lt->target == 4) && nlog++ < 20) {
+                const NvnTextureView *vv = views && views[i] ? (const NvnTextureView *)(uintptr_t)views[i] : NULL;
+                LOG("[nvn] render target %d: %s %ux%ux%u fmt %#x levels %u, view mask %#x layers %u+%u\n", i,
+                    lt->target == 2 ? "3D" : "2D array", lt->width, lt->height, lt->depth, lt->format, lt->levels,
+                    vv ? vv->setmask : 0, vv ? vv->min_layer : 0, vv ? vv->num_layers : 0);
+            }
+        }
         if (views && views[i]) {
             rt.has_view[i] = 1;
             memcpy(&rt.views[i], (void *)(uintptr_t)views[i], sizeof(NvnTextureView));
@@ -505,7 +515,7 @@ PLAIN(nvnCommandBufferSetPointSize, CMD_SET_POINT_SIZE)
 PLAIN(nvnCommandBufferSetSampleMask, CMD_SET_SAMPLE_MASK)
 PLAIN(nvnCommandBufferSetRenderEnable, CMD_SET_RENDER_ENABLE)
 NVN(nvnCommandBufferSetRenderEnableConditional) { (void)c; ONCE("SetRenderEnableConditional"); }
-NVN(nvnCommandBufferSetDepthClamp) { (void)c; ONCE("SetDepthClamp"); }
+PLAIN(nvnCommandBufferSetDepthClamp, CMD_SET_DEPTH_CLAMP)  // (ARMS: the fighter mask quad at the far plane)
 NVN(nvnCommandBufferSetRasterizerDiscard) { (void)c; ONCE("SetRasterizerDiscard"); }
 NVN(nvnCommandBufferSetConservativeRasterEnable) { (void)c; ONCE("SetConservativeRasterEnable"); }
 NVN(nvnCommandBufferSetConservativeRasterDilate) { (void)c; ONCE("SetConservativeRasterDilate"); }
