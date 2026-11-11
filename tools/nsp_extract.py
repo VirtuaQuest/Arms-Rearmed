@@ -1,11 +1,12 @@
 """Extract a game from its NSPs with the user's own keys (PFS0 > NCA3 > PFS0/RomFS, an update's RomFS as a Bktr patch).
 
 Usage: nsp_extract.py <game.nsp> <prod.keys> <outdir> [--update <update.nsp>] [--dlc <dlc.nsp>] [--list]
-                      [--romfs source|extract|none] [--files <text>]
+                      [--romfs source|extract|none] [--files <text>] [--title <id> --build <id> --want <name>]
 
 Writes <outdir>/exefs/* from the program NCA (the update's when given), <outdir>/control/** from the control NCA and
 <outdir>/romfs.src: where the RomFS is in the NSPs, for the runtime to read it in place (or --romfs extract: every
-file to <outdir>/romfs, ~18 GB for MUA3 with its update).
+file to <outdir>/romfs, ~18 GB for MUA3 with its update). --title / --build refuse another game or version, saying
+which in one line (the release's setup passes them).
 """
 import argparse
 import bisect
@@ -381,6 +382,32 @@ def extract_shaders(romfs, files, outdir):
     print(f' shaders: {n} files with shader code unpacked into {outdir}')
 
 
+def refuse(why):
+    """Exit with `why` as the last line of the output (stdout is buffered when it's a pipe: it goes first)."""
+    sys.stdout.flush()
+    sys.exit(why)
+
+
+def check_copy(a, base, upd):
+    """--title / --build: the player's copy is the right game, and its code the right version, or exit saying which."""
+    for path, ncas, what in ((a.nsp, base, 'The game'), (a.update, upd, 'The update')):
+        if ncas is None:
+            continue
+        if 'program' not in ncas:
+            refuse(f'{what} ({os.path.basename(path)}) holds no game code: is it a DLC or another title\'s file?')
+        tid = ncas['program'].program_id
+        if a.title and tid != int(a.title, 16):
+            refuse(f'{what} ({os.path.basename(path)}) is another game: its title ID is {tid:016X}, '
+                     f'and {a.want} is {int(a.title, 16):016X}.')
+    if a.build:
+        sec = {s.idx: s for s in (upd or base)['program'].sections}[0]
+        main = [(off, size) for name, off, size in pfs0_entries(sec.read, sec.data_off) if name == 'main']
+        build = sec.read(main[0][0] + 0x40, 0x20).hex() if main else ''
+        if not build.startswith(a.build.lower()):
+            refuse(f'This is another version of the game: {a.want} is needed, '
+                     + ('and the update given is a different one.' if upd else 'with its update (none was given).'))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('nsp', help='the base game: an .nsp or an .xci')
@@ -393,10 +420,23 @@ def main():
                     help='source (default): write <outdir>/romfs.src, the RomFS read in place from the NSPs; '
                          'extract: copy every file out to <outdir>/romfs')
     ap.add_argument('--files', help='also copy out the RomFS files whose path contains this text')
+    ap.add_argument('--title', help="the game's title ID (hex): any other game is refused, with a one-line reason")
+    ap.add_argument('--build', help="the start of exefs/main's build ID (hex): any other version is refused")
+    ap.add_argument('--want', default='the game', help='what --title and --build name, for those messages: "ARMS 5.4.0"')
     a = ap.parse_args()
     keys = load_keys(a.keys)
-    base = open_nsp(a.nsp, keys)
-    upd = open_nsp(a.update, keys) if a.update else None
+    if a.title or a.build:  # (the release's setup: a wrong copy or keys file is said in one line, not a traceback)
+        try:
+            base = open_nsp(a.nsp, keys)
+            upd = open_nsp(a.update, keys) if a.update else None
+        except KeyError as e:
+            if isinstance(e.args[0], str):
+                refuse(f'Your prod.keys has no {e.args[0]}: dump it again from your Switch, with its current firmware.')
+            refuse('A title key is missing: the NSP has no ticket. Dump the game again with its ticket.')
+        check_copy(a, base, upd)
+    else:
+        base = open_nsp(a.nsp, keys)
+        upd = open_nsp(a.update, keys) if a.update else None
     dlcs = [(d, open_nsp(d, keys)) for d in a.dlc]
     if a.list:
         return

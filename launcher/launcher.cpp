@@ -16,7 +16,8 @@
 // In the release folder (make dist: armsgen, zig, gamelib-src next to the launcher) the same steps need nothing
 // installed: armsgen extract / armsgen gen, then the game code compiled by the bundled zig (build_gamelib), all in
 // the launcher's own folder. Command lines (RecompLauncher, recomplauncher.json):
-//   --prepare --base=<xci|nsp> --keys=<prod.keys> [--update=<nsp>]   no window: INSTALL, "progress" lines on stdout
+//   --prepare --game=<xci|nsp> --update=<nsp> --keys=<prod.keys>   no window: INSTALL, "progress" lines on stdout
+//              (--base= is the same as --game=; each also as two arguments: --keys <prod.keys>)
 //   --play     the game, waited for; the window only opens when the game code must be built again first
 // Tests: ARMS_LAUNCHER_SHOT=<file.bmp> saves the window after a few frames and quits; ARMS_LAUNCHER_TAB=<n> opens
 // that page first; ARMS_LAUNCHER_PLAY=1 presses Play.
@@ -316,6 +317,7 @@ struct Step {
     double weight = 1;  // (its share of the whole run, for the progress the prepare step prints)
     int state = ST_WAIT;
     double secs = 0;
+    std::string why;  // (when it failed: its last line of output, which says why)
 };
 static std::vector<Step> g_steps;
 static std::atomic<double> g_step_frac{0};
@@ -648,6 +650,11 @@ static void worker(void) {
         if (code != 0) {
             st.state = ST_FAIL;
             result = 2;
+            {
+                std::lock_guard<std::mutex> lk(g_log_mu);
+                for (size_t j = g_log.size(); j-- > 0 && g_log[j].rfind("> ", 0) != 0 && g_log[j].rfind("==== ", 0) != 0;)
+                    if (!g_log[j].empty()) { st.why = g_log[j]; break; }
+            }
             log_line("Failed (exit code " + std::to_string(code) + ").");
             break;
         }
@@ -666,6 +673,7 @@ static void release_steps(bool extract, bool recompile, bool build) {
     if (extract) {
         std::string c = gen + " extract " + q(p_base) + " " + q(p_keys) + " extracted";
         if (p_update[0]) c += " --update " + q(p_update);
+        c += " --title 01009B500007C000 --build 501924b7c22129e5 --want \"ARMS 5.4.0\"";  // (else: why, in one line)
         Step s = {"Extract the game's code", c, g_root, false};
         s.weight = 1;
         g_steps.push_back(s);
@@ -1245,19 +1253,20 @@ static ImFont *load_font(float size) {
 }
 
 // ================================================================== main
-// armslauncher --prepare --base=<game.xci|nsp> --keys=<prod.keys> [--update=<update.nsp>]: RecompLauncher's
+// armslauncher --prepare --game=<game.xci|nsp> --update=<update.nsp> --keys=<prod.keys>: RecompLauncher's
 // prepare step (recomplauncher.json). No window: the paths are saved (launcher.ini), then INSTALL's steps run, with
 // "progress <0..1> <text>" lines on stdout and the whole log in prepare.log. Exit code 0 when the game is ready.
 static int prepare_cli(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        auto val = [&](const char *key, char *dst, size_t n) {
+        auto val = [&](const char *key, char *dst, size_t n) {  // (--key=<path>, or --key <path>)
             size_t k = strlen(key);
             if (!strncmp(a, key, k) && a[k] == '=') { snprintf(dst, n, "%s", a + k + 1); return true; }
+            if (!strcmp(a, key) && i + 1 < argc) { snprintf(dst, n, "%s", argv[++i]); return true; }
             return false;
         };
-        if (!val("--base", p_base, sizeof p_base) && !val("--update", p_update, sizeof p_update) &&
-            !val("--keys", p_keys, sizeof p_keys) && strcmp(a, "--prepare"))
+        if (!val("--base", p_base, sizeof p_base) && !val("--game", p_base, sizeof p_base) &&
+            !val("--update", p_update, sizeof p_update) && !val("--keys", p_keys, sizeof p_keys) && strcmp(a, "--prepare"))
             cli_out(std::string("unknown argument: ") + a + "\n");
     }
     g_cli_log = fopen((g_root + "prepare.log").c_str(), "w");
@@ -1273,11 +1282,13 @@ static int prepare_cli(int argc, char **argv) {
     paths_to_ini();
     start_steps(true, true, true);
     g_worker.join();
-    report_progress();
     if (g_result != 1) {
         std::string why = "A step failed: see prepare.log in the game's folder.";
         for (auto &st : g_steps)
-            if (st.state == ST_FAIL) { why = st.title + " failed: see prepare.log in the game's folder."; break; }
+            if (st.state == ST_FAIL) {
+                why = st.title + " failed: " + (st.why.empty() ? "" : st.why + " ") + "(prepare.log in the game's folder has more)";
+                break;
+            }
         cli_out("error " + why + "\n");
         return 2;
     }
