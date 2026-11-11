@@ -175,6 +175,12 @@ inherited "LAS Recomp" ones included (message boxes, the crash dialog, the CPU c
   build still uses the game's own icon from your dump; the release never does.
 - The shader preparation logs `[shader] preparation: progress <done>/<total>` in prepare-only runs (the launcher's
   progress).
+- **RecompLauncher's Recomp Standards** (recomplauncher.com/sdk-files/recomplauncher-agent.md): the release's setup
+  checks the player's copy first and says what's wrong in one line: `nsp_extract.py --title 01009B500007C000 --build
+  501924b7c22129e5 --want "ARMS 5.4.0"` refuses another game, another version (no update, or another one) and a
+  `prod.keys` without the keys needed; `--prepare`'s `error` line carries that reason. `--prepare` also takes
+  `--game=` (same as `--base=`) and each option as two arguments (`--keys <prod.keys>`). Without these options
+  nothing changed. README: the "Get it on RecompLauncher" badge.
 
 What this project changed relative to [LAS Recomp](https://github.com/peiikai/LASRecomp) (its recompiler and Switch
 runtime), why, and where. It also lists the debugging switches, the test routes, the known gaps and the next steps.

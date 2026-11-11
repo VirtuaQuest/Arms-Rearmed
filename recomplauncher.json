@@ -57,7 +57,7 @@
     ],
     "args": [
       "--prepare",
-      "--base={input:base}",
+      "--game={input:base}",
       "--update={input:update}",
       "--keys={input:keys}"
     ],
@@ -290,6 +290,7 @@
       "id": "volume",
       "label": "Volume",
       "group": "Sound and controllers",
+      "help": "1 is the game's own loudness; up to 2 makes it louder.",
       "slider": {
         "key": "volume",
         "min": 0,
@@ -305,6 +306,7 @@
       "id": "rumble",
       "label": "Rumble",
       "group": "Sound and controllers",
+      "help": "Controller vibration, where the game uses it on the Switch.",
       "choices": [
         {
           "label": "On",
