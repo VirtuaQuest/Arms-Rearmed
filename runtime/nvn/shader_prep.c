@@ -683,6 +683,14 @@ _Atomic int g_shader_prep_done, g_shader_prep_total;
 static void boot_progress(int done, int total) {
     atomic_store(&g_shader_prep_total, total);
     atomic_store(&g_shader_prep_done, done);
+    static int shown = -1;  // (the launcher's prepare step: "<x>: progress <done>/<total>" lines, every 5%)
+    static const char *prep_only;
+    if (!prep_only) prep_only = getenv("LARECOMP_PREP_ONLY") ? "1" : "";
+    int pct = total > 0 ? done * 100 / total : 0;
+    if (*prep_only && pct / 5 != shown) {
+        shown = pct / 5;
+        LOG("[shader] preparation: progress %d/%d\n", done, total);
+    }
 }
 void shader_prep_boot(const char *romfs) {
     const char *e = getenv("LARECOMP_SHADER_PREP");  // (on by default: no start screen runs it here; =0 off)

@@ -1,4 +1,4 @@
-# ARMS Recomp
+# ARMS Rearmed
 
 A static recompilation of *ARMS* (Nintendo Switch, version 5.4.0: the base game with its last update) into a native
 Windows x86-64 program, built on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s recompiler and Switch runtime
@@ -12,10 +12,31 @@ the game appears (a few seconds; about 12 s the first time after an install), so
 starts and no model shows up late. Online play, local wireless, the web manual and the eShop aren't available: the
 game says so and stays in its menus. Details: [docs/CHANGES.md](docs/CHANGES.md).
 
-No game files are included or ever committed. You need your own legally obtained copy of the game, its update and
-the keys from your own console.
+No game files are included or ever committed, and the releases hold no game code: the game code is recompiled from
+your own copy on your own PC. You need your own legally obtained copy of the game, its 5.4.0 update and the keys from
+your own console.
 
-## Setup (Windows)
+![ARMS Rearmed's icon (original art, no game assets)](docs/icon/icon.png)
+
+## Play with RecompLauncher
+
+ARMS Rearmed works with [RecompLauncher](https://recomplauncher.com): install it from the launcher, then give Easy
+Setup your ARMS XCI or NSP, the 5.4.0 update NSP and your `prod.keys`. The setup step recompiles the game for your PC
+(about 10 minutes; nothing else to install), then Play starts it. Video, sound and controller settings are on the
+game's page. Keep your XCI / NSP files where they are: the game reads its data from them.
+
+## Play with the release zip
+
+1. Download `ARMS-Rearmed-v<version>-Windows-x64.zip` from [Releases](https://github.com/VirtuaQuest/Arms-Rearmed/releases)
+   and unzip it somewhere you can write to (Documents or Desktop, not Program Files).
+2. Run `armslauncher.exe`. On **GAME FILES**, choose your base game (XCI or NSP), the 5.4.0 update (NSP) and your
+   `prod.keys`, then **INSTALL** (about 10 minutes the first time: extract, recompile, build, prepare the shaders).
+3. **FIGHT!** on the PLAY page.
+
+Needs Windows 10 or 11 (64-bit), a CPU with AVX2 (Intel 4th gen / AMD Ryzen or newer), a graphics driver with Vulkan
+1.3, 8 GB of RAM (16 GB recommended) and about 2 GB free for the setup.
+
+## Build from source (Windows)
 
 1. Install [MSYS2](https://www.msys2.org) to `C:\msys64`, then in its UCRT64 shell:
    `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld make mingw-w64-ucrt-x86_64-SDL3
@@ -62,11 +83,20 @@ controller SDL 3 knows works (Xbox, PlayStation, Switch Pro, and more), with rum
 (and the in-game Video tab) set the window mode and size, the internal resolution (up to 4x, or dynamic), FSR 1
 upscaling, SMAA and the aspect ratio. ARMS runs at its own 60 fps: its fights step once a frame.
 
+## Making a release
+
+From the MSYS2 UCRT64 shell (with `nasm` and `zip` installed as well): `make deps-windows` (an LGPL-only FFmpeg),
+`make gen-helper` (the extractor and recompiler frozen with PyInstaller), `tools/fetch_zig.sh` (the pinned compiler),
+then `make dist`: `build/dist/ARMS-Rearmed-v<VERSION>-Windows-x64.zip`. It checks that no game code, game files, GPL
+codec libraries or paths of the build machine are inside. Attach it to a GitHub release whose tag is `v<VERSION>`;
+`recomplauncher.json` inside tells RecompLauncher how to set the game up.
+
 ## Credits
 
 - **LAS Recomp** by Peiikai and contributors (MIT License, `LICENSE.LASRecomp`): the recompiler and the runtime.
 - Third-party components keep their own licenses (`third_party/`): SDL 3, Dear ImGui, FFmpeg, AMD FSR, SMAA, and the
-  Baloo 2 font (SIL Open Font License) the launcher uses.
+  Baloo 2 font (SIL Open Font License) the launcher uses. The release's bundled components, their licenses and
+  their sources: [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).
 - [Switchbrew](https://switchbrew.org) documentation.
 
 *ARMS* is a trademark of Nintendo. This project is not affiliated with or endorsed by Nintendo. The launcher's look is

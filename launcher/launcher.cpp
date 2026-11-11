@@ -1,4 +1,4 @@
-// ARMS Recomp launcher: picks the game files (base game, update, keys), runs the extraction, recompilation and build,
+// ARMS Rearmed launcher: picks the game files (base game, update, keys), runs the extraction, recompilation and build,
 // edits the display / audio settings, shows the controls, and starts the game.
 //
 // Look: an original bright, sporty style (yellow and black with neon accents, slanted banners, springs and halftone
@@ -13,6 +13,11 @@
 //   Extract             .venv\Scripts\python -I tools\nsp_extract.py <base> <keys> extracted [--update <update>]
 //   Recompile           make gen                (MSYS2 UCRT64: clang, make)
 //   Build               make -jN build/armsrecomp.exe build/armsgame.dll
+// In the release folder (make dist: armsgen, zig, gamelib-src next to the launcher) the same steps need nothing
+// installed: armsgen extract / armsgen gen, then the game code compiled by the bundled zig (build_gamelib), all in
+// the launcher's own folder. Command lines (RecompLauncher, recomplauncher.json):
+//   --prepare --base=<xci|nsp> --keys=<prod.keys> [--update=<nsp>]   no window: INSTALL, "progress" lines on stdout
+//   --play     the game, waited for; the window only opens when the game code must be built again first
 // Tests: ARMS_LAUNCHER_SHOT=<file.bmp> saves the window after a few frames and quits; ARMS_LAUNCHER_TAB=<n> opens
 // that page first; ARMS_LAUNCHER_PLAY=1 presses Play.
 #include <SDL3/SDL.h>
@@ -70,6 +75,50 @@ static void find_paths(void) {
     else g_root = g_exe_dir;
     g_root = full_path(g_root);
     if (!g_root.empty() && g_root.back() != '\\' && g_root.back() != '/') g_root += '\\';
+}
+
+// The release folder (make dist): the extractor / generator (armsgen), the compiler (zig) and what the game code is
+// compiled against (gamelib-src) next to the launcher, so INSTALL needs no MSYS2 or Python. gamelib-src/gamelib.id:
+// the id the game (armsrecomp.exe) wants its game code library built with (GAMELIB_ID), then the C flags.
+static bool g_release;
+static std::string g_gamelib_id, g_gen_flags;
+static void find_release(void) {
+    g_release = is_file(g_exe_dir + "armsgen\\armsgen.exe") && is_file(g_exe_dir + "zig\\zig.exe") &&
+                is_file(g_exe_dir + "gamelib-src\\gamelib.id");
+    if (!g_release) return;
+    if (FILE *f = fopen((g_exe_dir + "gamelib-src\\gamelib.id").c_str(), "r")) {
+        char a[256] = {0}, b[1024] = {0};
+        if (fgets(a, sizeof a, f)) g_gamelib_id = a;
+        if (fgets(b, sizeof b, f)) g_gen_flags = b;
+        fclose(f);
+        for (std::string *s : {&g_gamelib_id, &g_gen_flags})
+            while (!s->empty() && (s->back() == '\n' || s->back() == '\r' || s->back() == ' ')) s->pop_back();
+    }
+    if (g_gamelib_id.empty()) g_release = false;
+}
+// The id a game code library built from these game files has (runtime/gamelib.h gamelib_full_id): GAMELIB_ID-<the
+// first 8 bytes of exefs/main's build ID, in hex>. "" when exefs/main is unreadable.
+static std::string gamelib_full_id(void) {
+    FILE *f = fopen((g_root + "extracted\\exefs\\main").c_str(), "rb");
+    if (!f) return "";
+    unsigned char b[8];
+    bool ok = fseek(f, 64, SEEK_SET) == 0 && fread(b, 1, 8, f) == 8;
+    fclose(f);
+    if (!ok) return "";
+    char hex[17];
+    for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02X", b[i]);
+    return g_gamelib_id + "-" + hex;
+}
+static bool gamelib_current(void) {  // armsgame.dll is there and was built for these game files and this release
+    std::string want = gamelib_full_id(), have;
+    if (want.empty() || !is_file(g_root + "armsgame.dll")) return false;
+    if (FILE *f = fopen((g_root + "armsgame.dll.id").c_str(), "r")) {
+        char id[256] = {0};
+        if (fgets(id, sizeof id, f)) have = id;
+        fclose(f);
+    }
+    while (!have.empty() && (have.back() == '\n' || have.back() == '\r')) have.pop_back();
+    return have == want;
 }
 
 // ================================================================== ini files (lines kept; get / set by key)
@@ -195,7 +244,7 @@ static bool settings_to_ini(void) {
     char v[32];
     snprintf(v, sizeof v, "%.2f", s_volume);
     I.set("volume", v);
-    return I.save("ARMS Recomp settings (the launcher and the in-game menu)");
+    return I.save("ARMS Rearmed settings (the launcher and the in-game menu)");
 }
 
 // ================================================================== game files and toolchain
@@ -215,7 +264,7 @@ static void paths_to_ini(void) {
     g_launcher_ini.set("update", p_update);
     g_launcher_ini.set("keys", p_keys);
     g_launcher_ini.set("msys2", p_msys);
-    g_launcher_ini.save("ARMS Recomp launcher: your game files (never shared) and tools");
+    g_launcher_ini.save("ARMS Rearmed launcher: your game files (never shared) and tools");
 }
 
 static void SDLCALL dialog_done(void *userdata, const char *const *files, int filter) {
@@ -242,31 +291,91 @@ static std::string nacp_version(void) {  // (control.nacp: DisplayVersion at 0x3
     return v;
 }
 static void refresh_status(void) {
+    g_status.extracted = is_file(g_root + "extracted\\exefs\\main") && is_file(g_root + "extracted\\romfs.src");
+    g_status.version = nacp_version();
+    if (g_release) {  // (the tools are in the release; the generated C isn't kept once it's built)
+        g_status.venv = g_status.msys = true;
+        g_status.built = is_file(g_exe_dir + "armsrecomp.exe") && gamelib_current();
+        g_status.generated = g_status.built;
+        return;
+    }
     g_status.venv = is_file(g_root + ".venv\\Scripts\\python.exe");
     g_status.msys = is_file(std::string(p_msys) + "\\usr\\bin\\make.exe") && is_file(std::string(p_msys) + "\\ucrt64\\bin\\clang.exe");
-    g_status.extracted = is_file(g_root + "extracted\\exefs\\main") && is_file(g_root + "extracted\\romfs.src");
     g_status.generated = is_dir(g_root + "generated\\game");
     g_status.built = is_file(g_root + "build\\armsrecomp.exe") && is_file(g_root + "build\\armsgame.dll");
-    g_status.version = nacp_version();
 }
 
 // ================================================================== the step runner (child processes, a log)
 enum { ST_WAIT, ST_RUN, ST_OK, ST_FAIL, ST_SKIP };
-struct Step { std::string title, cmd, cwd; bool msys; bool game = false; int state = ST_WAIT; double secs = 0; };
+enum { K_PROCESS, K_BUILD_GAMELIB };  // (a command line; the release's own compile + link of the game code)
+struct Step {
+    std::string title, cmd, cwd;
+    bool msys;
+    bool game = false;
+    int kind = K_PROCESS;
+    double weight = 1;  // (its share of the whole run, for the progress the prepare step prints)
+    int state = ST_WAIT;
+    double secs = 0;
+};
 static std::vector<Step> g_steps;
+static std::atomic<double> g_step_frac{0};
+static size_t g_step_index;
 static std::mutex g_log_mu;
 static std::vector<std::string> g_log;
 static std::atomic<bool> g_running{false}, g_cancel{false};
 static std::atomic<int> g_result{0};  // 0 none, 1 done, 2 failed, 3 cancelled
 static std::thread g_worker;
+static bool g_cli;            // armslauncher --prepare: no window; progress lines on stdout (RecompLauncher's prepare)
+static FILE *g_cli_log;       // (and the whole log in prepare.log)
 #ifdef _WIN32
 static HANDLE g_job;
 #endif
 
+static void cli_out(const std::string &s) {
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);  // (a GUI-subsystem program: the handle RecompLauncher gave it)
+    DWORD n;
+    if (h && h != INVALID_HANDLE_VALUE) WriteFile(h, s.data(), (DWORD)s.size(), &n, NULL);
+#else
+    fputs(s.c_str(), stdout), fflush(stdout);
+#endif
+}
+// The whole run's progress (0..1) from the steps' weights and the running step's own fraction, printed as
+// "progress <0..1> <text>" in prepare mode (at most every half second, or when the text changes)
+static void report_progress(void) {
+    if (!g_cli || g_steps.empty()) return;
+    static double last_t;
+    static std::string last_text;
+    double total = 0, done = 0;
+    for (size_t i = 0; i < g_steps.size(); i++) {
+        if (g_steps[i].state == ST_SKIP) continue;
+        total += g_steps[i].weight;
+        if (i < g_step_index) done += g_steps[i].weight;
+        else if (i == g_step_index) done += g_steps[i].weight * std::clamp(g_step_frac.load(), 0.0, 1.0);
+    }
+    std::string text = g_step_index < g_steps.size() ? g_steps[g_step_index].title : "Done";
+    double now = SDL_GetTicks() / 1000.0;
+    if (text == last_text && now - last_t < 0.5) return;
+    last_t = now, last_text = text;
+    char line[512];
+    snprintf(line, sizeof line, "progress %.3f %s\n", total > 0 ? done / total : 0, text.c_str());
+    cli_out(line);
+}
+
 static void log_line(const std::string &s) {
-    std::lock_guard<std::mutex> lk(g_log_mu);
-    g_log.push_back(s);
-    if (g_log.size() > 4000) g_log.erase(g_log.begin(), g_log.begin() + 1000);
+    {
+        std::lock_guard<std::mutex> lk(g_log_mu);
+        g_log.push_back(s);
+        if (g_log.size() > 4000) g_log.erase(g_log.begin(), g_log.begin() + 1000);
+        if (g_cli_log) fprintf(g_cli_log, "%s\n", s.c_str()), fflush(g_cli_log);
+    }
+    // the generator's "<module>: progress <done>/<total>" lines: how far the running step is
+    size_t p = s.find(": progress ");
+    if (p != std::string::npos) {
+        long a = 0, b = 0;
+        if (sscanf(s.c_str() + p + 11, "%ld/%ld", &a, &b) == 2 && b > 0) g_step_frac = (double)a / b;
+    }
+    report_progress();
 }
 
 #ifdef _WIN32
@@ -338,17 +447,202 @@ static int run_process(const Step &st) {
 static int run_process(const Step &st) { log_line("Running steps is only implemented on Windows: " + st.cmd); return -1; }
 #endif
 
+static std::string q(const std::string &s) { return "\"" + s + "\""; }
+
+#ifdef _WIN32
+// The release's build of the game code library: generated\{game,sdk}\*.c compiled by the bundled zig, as many at a
+// time as the CPU and memory allow, then linked against the game's import library (armsrecomp.dll.a) with zig's
+// runtime built ahead of time (zig\rt, tools/zig_slim.sh) - as the Makefile builds build/armsgame.dll with clang.
+// Writes armsgame.dll and armsgame.dll.id (the id the game checks) next to the game, then deletes the generated C,
+// the objects and zig's cache (about 900 MB).
+static HANDLE spawn_logged(const std::string &cmd, const std::string &cwd, const std::string &log) {
+    SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+    HANDLE out = CreateFileA(log.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out == INVALID_HANDLE_VALUE) return NULL;
+    STARTUPINFOA si = {};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = si.hStdError = out;
+    PROCESS_INFORMATION pi = {};
+    std::string c = cmd;
+    BOOL ok = CreateProcessA(NULL, c.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, cwd.c_str(),
+                             &si, &pi);
+    CloseHandle(out);
+    if (!ok) return NULL;
+    AssignProcessToJobObject(g_job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    return pi.hProcess;
+}
+static std::string file_text(const std::string &p, size_t max) {
+    std::string s;
+    if (FILE *f = fopen(p.c_str(), "rb")) {
+        s.resize(max);
+        s.resize(fread(&s[0], 1, max, f));
+        fclose(f);
+    }
+    return s;
+}
+static void remove_tree(const std::string &dir) {  // (a folder this launcher made: generated\, gamebuild\obj\)
+    WIN32_FIND_DATAA d;
+    HANDLE h = FindFirstFileA((dir + "\\*").c_str(), &d);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            std::string n = d.cFileName, p = dir + "\\" + n;
+            if (n == "." || n == "..") continue;
+            if (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) RemoveDirectoryA(p.c_str()) || DeleteFileA(p.c_str());
+            else if (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) remove_tree(p);
+            else DeleteFileA(p.c_str());
+        } while (FindNextFileA(h, &d));
+        FindClose(h);
+    }
+    RemoveDirectoryA(dir.c_str());
+}
+static int build_gamelib(void) {
+    const std::string work = g_root + "gamebuild\\", objdir = work + "obj\\";
+    CreateDirectoryA(work.c_str(), NULL);
+    CreateDirectoryA(objdir.c_str(), NULL);
+    std::string full = gamelib_full_id();
+    if (full.empty()) { log_line("extracted\\exefs\\main is missing: extract the game first."); return 1; }
+    const std::string zig = q(g_exe_dir + "zig\\zig.exe");
+    std::string flags;  // (gamelib.id's flags; zig names CPUs its own way: -march=x86-64-v3 is -mcpu=x86_64_v3)
+    for (size_t a = 0; a < g_gen_flags.size();) {
+        size_t b = g_gen_flags.find(' ', a);
+        if (b == std::string::npos) b = g_gen_flags.size();
+        std::string f = g_gen_flags.substr(a, b - a);
+        a = b + 1;
+        if (f.empty()) continue;
+        if (f.rfind("-march=", 0) == 0) {
+            f = "-mcpu=" + f.substr(7);
+            std::replace(f.begin() + 6, f.end(), '-', '_');
+        }
+        flags += " " + f;
+    }
+    flags += " " + q("-I" + g_exe_dir + "gamelib-src");
+    std::string zc = work + "zig-cache";
+    SetEnvironmentVariableA("ZIG_GLOBAL_CACHE_DIR", zc.c_str());
+    SetEnvironmentVariableA("ZIG_LOCAL_CACHE_DIR", zc.c_str());
+
+    struct Unit { std::string src, obj, log; unsigned long long bytes; bool entry; };
+    std::vector<Unit> units;
+    for (const char *m : {"game", "sdk"}) {
+        WIN32_FIND_DATAA d;
+        std::string dir = g_root + "generated\\" + m + "\\";
+        HANDLE h = FindFirstFileA((dir + "*.c").c_str(), &d);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            std::string n = d.cFileName, stem = std::string(m) + "_" + n.substr(0, n.size() - 2);
+            units.push_back({dir + n, objdir + stem + ".o", objdir + stem + ".log",
+                             ((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow, false});
+        } while (FindNextFileA(h, &d));
+        FindClose(h);
+    }
+    if (units.empty()) { log_line("No generated C in generated\\: recompile first."); return 1; }
+    std::sort(units.begin(), units.end(), [](const Unit &a, const Unit &b) { return a.bytes > b.bytes; });  // (biggest first)
+    units.push_back({g_exe_dir + "gamelib-src\\gamelib_entry.c", objdir + "entry.o", objdir + "entry.log", 0, true});
+
+    int jobs = std::max(1, SDL_GetNumLogicalCPUCores());
+    MEMORYSTATUSEX ms = {sizeof ms};
+    if (GlobalMemoryStatusEx(&ms)) {  // (about 1.5 GB for each compiler on the biggest files)
+        int by_mem = (int)((ms.ullTotalPhys / (1024.0 * 1024 * 1024) - 3) / 1.5);
+        jobs = std::min(jobs, std::max(1, by_mem));
+    }
+    jobs = std::min(jobs, 32);
+    log_line("Compiling " + std::to_string(units.size()) + " files with zig, " + std::to_string(jobs) + " at a time");
+    std::vector<std::pair<HANDLE, size_t>> run;
+    size_t next = 0, done = 0;
+    bool failed = false;
+    while (!g_cancel && (run.size() || (!failed && next < units.size()))) {
+        while (!failed && (int)run.size() < jobs && next < units.size()) {
+            const Unit &u = units[next];
+            std::string cmd = zig + " cc" + flags;
+            if (u.entry) cmd += " \"-DGAMELIB_ID=\\\"" + full + "\\\"\"";
+            cmd += " -c " + q(u.src) + " -o " + q(u.obj);
+            HANDLE h = spawn_logged(cmd, g_root, u.log);
+            if (!h) {
+                log_line("Couldn't start the compiler (Windows error " + std::to_string(GetLastError()) + "): " + cmd);
+                failed = true;
+                break;
+            }
+            run.push_back({h, next++});
+        }
+        if (run.empty()) break;
+        std::vector<HANDLE> hs;
+        for (auto &r : run) hs.push_back(r.first);
+        DWORD w = WaitForMultipleObjects((DWORD)hs.size(), hs.data(), FALSE, 250);
+        if (w >= WAIT_OBJECT_0 && w < WAIT_OBJECT_0 + hs.size()) {
+            size_t k = w - WAIT_OBJECT_0, idx = run[k].second;
+            DWORD code = 1;
+            GetExitCodeProcess(run[k].first, &code);
+            CloseHandle(run[k].first);
+            run.erase(run.begin() + k);
+            if (code != 0) {
+                failed = true;
+                log_line("Compiling " + units[idx].src + " failed (exit code " + std::to_string(code) + "):");
+                std::string t = file_text(units[idx].log, 4000);
+                for (size_t a = 0; a < t.size();) {
+                    size_t b = t.find('\n', a);
+                    if (b == std::string::npos) b = t.size();
+                    if (b > a) log_line("  " + t.substr(a, b - a - (t[b - 1] == '\r')));
+                    a = b + 1;
+                }
+            } else {
+                DeleteFileA(units[idx].log.c_str());
+                if (++done % 25 == 0) log_line("  compiled " + std::to_string(done) + " of " + std::to_string(units.size()));
+            }
+            g_step_frac = 0.92 * done / units.size();
+            report_progress();
+        }
+    }
+    for (auto &r : run) CloseHandle(r.first);  // (cancelled: the job object ends them)
+    if (g_cancel || failed) return 1;
+
+    log_line("Linking armsgame.dll");
+    if (FILE *f = fopen((work + "objs.rsp").c_str(), "wb")) {  // (forward slashes: backslashes are escapes in it)
+        for (auto &u : units) {
+            std::string o = u.obj;
+            std::replace(o.begin(), o.end(), '\\', '/');
+            fprintf(f, "\"%s\"\n", o.c_str());
+        }
+        fclose(f);
+    }
+    const std::string dll = g_root + "armsgame.dll", tmp = dll + ".tmp";
+    Step link = {"Link", zig + " lld-link " + q("@" + g_exe_dir + "zig\\rt\\link.rsp") + " " +
+                         q("-LIBPATH:" + g_exe_dir + "zig\\rt") + " " + q("-OUT:" + tmp) + " " + q("@" + work + "objs.rsp") +
+                         " " + q(g_exe_dir + "armsrecomp.dll.a"), g_root, false};
+    int code = run_process(link);
+    if (code != 0) { log_line("Linking failed (exit code " + std::to_string(code) + ")."); return code ? code : 1; }
+    DeleteFileA((dll + ".id").c_str());
+    if (!MoveFileExA(tmp.c_str(), dll.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        log_line("Couldn't replace armsgame.dll (Windows error " + std::to_string(GetLastError()) +
+                 "): close the game if it's running, then try again.");
+        return 1;
+    }
+    if (FILE *f = fopen((dll + ".id").c_str(), "w")) fprintf(f, "%s\n", full.c_str()), fclose(f);
+    log_line("Built armsgame.dll (" + full + ")");
+    remove_tree(g_root + "gamebuild");  // (the objects and zig's cache: ~900 MB, of no use once it's linked)
+    remove_tree(g_root + "generated");
+    g_step_frac = 1;
+    return 0;
+}
+#else
+static int build_gamelib(void) { log_line("Building the game code is only implemented on Windows."); return 1; }
+#endif
+
 static void worker(void) {
     int result = 1;
-    for (auto &st : g_steps) {
+    for (size_t i = 0; i < g_steps.size(); i++) {
+        Step &st = g_steps[i];
         if (st.state == ST_SKIP) continue;
         if (g_cancel) { st.state = ST_SKIP; continue; }
+        g_step_index = i;
+        g_step_frac = 0;
         st.state = ST_RUN;
         log_line("");
         log_line("==== " + st.title);
-        log_line("> " + st.cmd);
+        if (!st.cmd.empty()) log_line("> " + st.cmd);
         uint64_t t0 = SDL_GetTicks();
-        int code = run_process(st);
+        int code = st.kind == K_BUILD_GAMELIB ? build_gamelib() : run_process(st);
         st.secs = (SDL_GetTicks() - t0) / 1000.0;
         if (g_cancel) { st.state = ST_FAIL; result = 3; log_line("Cancelled."); break; }
         if (code != 0) {
@@ -358,19 +652,62 @@ static void worker(void) {
             break;
         }
         st.state = ST_OK;
+        g_step_frac = 1;
         log_line("Done in " + std::to_string((int)st.secs) + " s.");
     }
+    g_step_index = g_steps.size();
     g_result = result;
     g_running = false;
 }
 
-static std::string q(const std::string &s) { return "\"" + s + "\""; }
+// The release's steps: everything from the folder the launcher is in (make dist)
+static void release_steps(bool extract, bool recompile, bool build) {
+    std::string gen = q(g_exe_dir + "armsgen\\armsgen.exe");
+    if (extract) {
+        std::string c = gen + " extract " + q(p_base) + " " + q(p_keys) + " extracted";
+        if (p_update[0]) c += " --update " + q(p_update);
+        Step s = {"Extract the game's code", c, g_root, false};
+        s.weight = 1;
+        g_steps.push_back(s);
+    }
+    if (recompile) {
+        Step s = {"Recompile the game (ARM64 to C)", gen + " gen game extracted\\exefs\\main 0x7000000000 generated\\game --simd c",
+                  g_root, false};
+        s.weight = 2.5;
+        g_steps.push_back(s);
+        s = {"Recompile the system code", gen + " gen sdk extracted\\exefs\\sdk 0x7006000000 generated\\sdk --hle " +
+                                              q(g_exe_dir + "gamelib-src\\hle_symbols.txt") + " --simd c", g_root, false};
+        s.weight = 1;
+        g_steps.push_back(s);
+    }
+    if (build) {
+        Step s = {"Build the game code (C to x86-64)", "", g_root, false};
+        s.kind = K_BUILD_GAMELIB;
+        s.weight = 12;
+        g_steps.push_back(s);
+        Step prep = {"Prepare the shaders", q(g_exe_dir + "armsrecomp.exe") + " extracted", g_root, false};
+        prep.game = true;
+        prep.weight = 2;
+        g_steps.push_back(prep);
+    }
+}
+
 static void start_steps(bool extract, bool recompile, bool build) {
     if (g_running) return;
     if (g_worker.joinable()) g_worker.join();
     g_steps.clear();
     g_cancel = false;
     g_result = 0;
+    if (g_release) {
+        release_steps(extract, recompile, build);
+        {
+            std::lock_guard<std::mutex> lk(g_log_mu);
+            g_log.clear();
+        }
+        g_running = true;
+        g_worker = std::thread(worker);
+        return;
+    }
     std::string py = g_root + ".venv\\Scripts\\python.exe";
     if (!g_status.venv) {
         g_steps.push_back({"Python environment", "py -3.12 -m venv .venv", g_root, false});
@@ -408,8 +745,9 @@ static void cancel_steps(void) {
 }
 
 // ================================================================== the game
-static std::string launch_game(void) {
-    std::string exe = g_root + "build\\armsrecomp.exe";
+// wait_code: wait for the game to close and give its exit code (armslauncher --play, as RecompLauncher starts it)
+static std::string launch_game(int *wait_code = nullptr) {
+    std::string exe = g_release ? g_exe_dir + "armsrecomp.exe" : g_root + "build\\armsrecomp.exe";
     if (!is_file(exe)) exe = g_exe_dir + "armsrecomp.exe";
     if (!is_file(exe)) return "The PC version isn't built yet: set up your game files first (GAME FILES).";
     if (!is_dir(g_root + "extracted")) return "No extracted game files: set them up first (GAME FILES).";
@@ -431,6 +769,12 @@ static std::string launch_game(void) {
     if (!CreateProcessA(exe.c_str(), cmd.data(), NULL, NULL, FALSE, 0, NULL, g_root.c_str(), &si, &pi))
         return "Couldn't start the game (Windows error " + std::to_string(GetLastError()) + ").";
     CloseHandle(pi.hThread);
+    if (wait_code) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        *wait_code = (int)code;
+    }
     CloseHandle(pi.hProcess);
     return "";
 #else
@@ -586,6 +930,7 @@ static void page_play(void) {
         {"The PC version is built", g_status.built, "GAME FILES: INSTALL builds it."},
     };
     for (auto &r : rows) {
+        if (g_release && &r == &rows[1]) continue;  // (one step with the build there)
         check_mark(r.ok);
         ImGui::TextUnformatted(r.name);
         if (!r.ok) { ImGui::SameLine(); ImGui::TextColored(V(C_GREY), "  %s", r.fix); }
@@ -641,9 +986,15 @@ static void page_setup(SDL_Window *win) {
     ImGui::Spacing();
     float lw = 270 * g_scale;
     path_row("Base game (XCI or NSP)", p_base, sizeof p_base, 0, win, false, lw);
-    path_row("Update (NSP, optional)", p_update, sizeof p_update, 1, win, true, lw);
+    path_row("5.4.0 update (NSP)", p_update, sizeof p_update, 1, win, false, lw);
     path_row("Keys (prod.keys)", p_keys, sizeof p_keys, 2, win, false, lw);
     ImGui::Spacing();
+    if (g_release) {
+        heading("TOOLS", C_CYAN);
+        check_mark(true);
+        ImGui::TextUnformatted("Included: the extractor, the recompiler and the compiler (nothing else to install)");
+        ImGui::Spacing();
+    } else {
     heading("TOOLS", C_CYAN);
     check_mark(g_status.msys);
     ImGui::AlignTextToFramePadding();
@@ -658,8 +1009,9 @@ static void page_setup(SDL_Window *win) {
     check_mark(g_status.venv);
     ImGui::TextUnformatted(g_status.venv ? "Python environment (.venv)" : "Python environment: made by INSTALL (needs Python 3.12)");
     ImGui::Spacing();
+    }
 
-    bool inputs = p_base[0] && is_file(p_base) && p_keys[0] && is_file(p_keys) && (!p_update[0] || is_file(p_update));
+    bool inputs = p_base[0] && is_file(p_base) && p_keys[0] && is_file(p_keys) && p_update[0] && is_file(p_update);
     bool can = !g_running && g_status.msys;
     float bw = (ImGui::GetContentRegionAvail().x - 24 * g_scale) / 3;
     if (big_button("##install", "INSTALL", ImVec2(bw, 58 * g_scale), C_LIME, C_BLACK, can && inputs)) {
@@ -668,7 +1020,7 @@ static void page_setup(SDL_Window *win) {
     }
     ImGui::SameLine();
     if (big_button("##rebuild", "REBUILD", ImVec2(bw, 58 * g_scale), C_CYAN, C_BLACK, can && g_status.extracted))
-        start_steps(!is_dir(g_root + "extracted\\shaders") && p_base[0] && p_keys[0], true, true);
+        start_steps(!is_dir(g_root + "extracted\\shaders") && inputs, true, true);
     ImGui::SameLine();
     if (big_button("##cancel", "CANCEL", ImVec2(bw, 58 * g_scale), C_PINK, C_WHITE, g_running)) cancel_steps();
     hint("INSTALL: extract, recompile and build (about 10 minutes the first time). REBUILD: recompile and build again "
@@ -818,13 +1170,13 @@ static void page_controls(void) {
          "controller button).");
     if (ImGui::Button("Reset keyboard & mouse")) {
         int n = g_settings_ini.remove_prefix("bind_key_");
-        g_settings_ini.save("ARMS Recomp settings (the launcher and the in-game menu)");
+        g_settings_ini.save("ARMS Rearmed settings (the launcher and the in-game menu)");
         flash(n ? "Keyboard and mouse back to the defaults above." : "Keyboard and mouse were already on the defaults.");
     }
     ImGui::SameLine();
     if (ImGui::Button("Reset controller")) {
         int n = g_settings_ini.remove_prefix("bind_pad_");
-        g_settings_ini.save("ARMS Recomp settings (the launcher and the in-game menu)");
+        g_settings_ini.save("ARMS Rearmed settings (the launcher and the in-game menu)");
         flash(n ? "Controller back to the defaults above." : "The controller was already on the defaults.");
     }
 }
@@ -832,12 +1184,12 @@ static void page_controls(void) {
 static void page_about(void) {
     heading("ABOUT");
     ImGui::PushTextWrapPos(0);
-    ImGui::TextUnformatted("ARMS Recomp runs your copy of ARMS natively on Windows: the game's ARM64 code is recompiled to "
+    ImGui::TextUnformatted("ARMS Rearmed runs your copy of ARMS natively on Windows: the game's ARM64 code is recompiled to "
                            "C and built for x86-64, and a Switch runtime (graphics through Vulkan, audio, input, files) "
                            "takes the console's place.");
     ImGui::Spacing();
     ImGui::TextColored(V(C_CYAN), "Credits");
-    ImGui::BulletText("LAS Recomp by Peiikai and contributors (MIT): the recompiler and the Switch runtime");
+    ImGui::BulletText("ARMS Rearmed by Peiikai and contributors (MIT): the recompiler and the Switch runtime");
     ImGui::BulletText("SDL 3, Dear ImGui, FFmpeg, the Vulkan SDK, AMD FidelityFX FSR, SMAA");
     ImGui::BulletText("Baloo 2 font (Ek Type, SIL Open Font License)");
     ImGui::BulletText("Switchbrew's documentation");
@@ -893,29 +1245,90 @@ static ImFont *load_font(float size) {
 }
 
 // ================================================================== main
+// armslauncher --prepare --base=<game.xci|nsp> --keys=<prod.keys> [--update=<update.nsp>]: RecompLauncher's
+// prepare step (recomplauncher.json). No window: the paths are saved (launcher.ini), then INSTALL's steps run, with
+// "progress <0..1> <text>" lines on stdout and the whole log in prepare.log. Exit code 0 when the game is ready.
+static int prepare_cli(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        auto val = [&](const char *key, char *dst, size_t n) {
+            size_t k = strlen(key);
+            if (!strncmp(a, key, k) && a[k] == '=') { snprintf(dst, n, "%s", a + k + 1); return true; }
+            return false;
+        };
+        if (!val("--base", p_base, sizeof p_base) && !val("--update", p_update, sizeof p_update) &&
+            !val("--keys", p_keys, sizeof p_keys) && strcmp(a, "--prepare"))
+            cli_out(std::string("unknown argument: ") + a + "\n");
+    }
+    g_cli_log = fopen((g_root + "prepare.log").c_str(), "w");
+    auto fail = [](const std::string &why) {
+        cli_out("error " + why + "\n");
+        log_line(why);
+        return 1;
+    };
+    if (!g_release) return fail("This isn't a release folder (armsgen, zig and gamelib-src next to the launcher).");
+    if (!p_base[0] || !is_file(p_base)) return fail("The game (an XCI or NSP of ARMS) wasn't found: " + std::string(p_base));
+    if (!p_keys[0] || !is_file(p_keys)) return fail("The keys file (prod.keys) wasn't found: " + std::string(p_keys));
+    if (!p_update[0] || !is_file(p_update)) return fail("The 5.4.0 update (NSP) wasn't found: " + std::string(p_update));
+    paths_to_ini();
+    start_steps(true, true, true);
+    g_worker.join();
+    report_progress();
+    if (g_result != 1) {
+        std::string why = "A step failed: see prepare.log in the game's folder.";
+        for (auto &st : g_steps)
+            if (st.state == ST_FAIL) { why = st.title + " failed: see prepare.log in the game's folder."; break; }
+        cli_out("error " + why + "\n");
+        return 2;
+    }
+    cli_out("progress 1 Ready to play\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    (void)argc, (void)argv;
-    if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
+    bool prepare = false, play = false;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--prepare")) prepare = true;
+        if (!strcmp(argv[i], "--play")) play = true;
+    }
     find_paths();
-    list_modes();
-    g_settings_ini.load(g_root + "larecomp.ini");
+    find_release();
     g_launcher_ini.load(g_root + "launcher.ini");
-    settings_from_ini();
     paths_from_ini();
-    refresh_status();
 #ifdef _WIN32
     g_job = CreateJobObjectA(NULL, NULL);  // (Cancel / closing the launcher ends a step's whole process tree)
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {};
     li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &li, sizeof li);
 #endif
+    if (prepare) {
+        g_cli = true;
+        int r = prepare_cli(argc, argv);
+        if (g_cli_log) fclose(g_cli_log);
+        return r;
+    }
+    refresh_status();
+    // armslauncher --play (RecompLauncher's Play): the game straight away, waited for (its exit code is ours). Only when
+    // the game code needs building again - a release update changed the recompiler - the window opens and rebuilds it
+    // first, from the game files set up before.
+    if (play && g_status.extracted && g_status.built) {
+        int code = 0;
+        std::string e = launch_game(&code);
+        if (!e.empty()) { SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ARMS Rearmed", e.c_str(), NULL); return 1; }
+        return code;
+    }
+    if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
+    list_modes();
+    g_settings_ini.load(g_root + "larecomp.ini");
+    settings_from_ini();
+    bool play_after = play && g_status.extracted && p_base[0] && p_keys[0];  // (rebuild, then play)
 
     g_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     if (g_scale <= 0) g_scale = 1;
     int ww = (int)(1240 * g_scale), wh = (int)(840 * g_scale);  // (within the desktop, high-DPI screens included)
     if (ww > g_desktop.w * 9 / 10) ww = g_desktop.w * 9 / 10;
     if (wh > g_desktop.h * 9 / 10) wh = g_desktop.h * 9 / 10;
-    SDL_Window *win = SDL_CreateWindow("ARMS Recomp - Launcher", ww, wh,
+    SDL_Window *win = SDL_CreateWindow("ARMS Rearmed - Launcher", ww, wh,
                                        SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
     SDL_SetWindowMinimumSize(win, std::min(ww, (int)(1000 * g_scale)), std::min(wh, (int)(700 * g_scale)));
     SDL_Renderer *ren = win ? SDL_CreateRenderer(win, NULL) : NULL;
@@ -943,6 +1356,14 @@ int main(int argc, char **argv) {
     if (getenv("ARMS_LAUNCHER_TAB")) tab = std::clamp(atoi(getenv("ARMS_LAUNCHER_TAB")), 0, 4);
     bool quit = false, was_running = false;
     uint64_t last_status = 0;
+    int exit_code = 0;
+    if (play_after) {
+        tab = 1;
+        start_steps(!is_dir(g_root + "extracted\\shaders") && is_file(p_base) && is_file(p_keys), true, true);
+        flash("The game code needs building again for this version: it plays as soon as it's done.");
+    } else if (play) {
+        flash("Set up your game files first: choose them here, then INSTALL.");
+    }
     while (!quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -983,6 +1404,13 @@ int main(int argc, char **argv) {
             flash(g_result == 1 ? "All done: the PC version is built. Press FIGHT! on the PLAY page."
                   : g_result == 3 ? "Cancelled." : "A step failed: see the log for why.");
             if (g_result == 1) tab = 0;
+            if (play_after && g_result == 1 && g_status.built) {  // (--play: rebuilt, so the game now, waited for)
+                SDL_HideWindow(win);
+                std::string e = launch_game(&exit_code);
+                if (!e.empty()) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ARMS Rearmed", e.c_str(), NULL), exit_code = 1;
+                quit = true;
+            }
+            play_after = false;
         }
         was_running = g_running;
         if (SDL_GetTicks() - last_status > 2000 && !g_running) { refresh_status(); last_status = SDL_GetTicks(); }
@@ -998,7 +1426,7 @@ int main(int argc, char **argv) {
         // header: a black slanted banner with the title
         float hh = 118 * g_scale;
         slab(bg, ImVec2(-60 * g_scale, 22 * g_scale), ImVec2(size.x * 0.62f, 22 * g_scale + hh), C_BLACK, 28 * g_scale);
-        slant_text_outlined(bg, f_title, f_title->FontSize, ImVec2(42 * g_scale, 26 * g_scale), C_YELLOW, C_BLACK, "ARMS RECOMP", 2);
+        slant_text_outlined(bg, f_title, f_title->FontSize, ImVec2(42 * g_scale, 26 * g_scale), C_YELLOW, C_BLACK, "ARMS REARMED", 2);
         slant_text(bg, f_body, f_body->FontSize, ImVec2(52 * g_scale, 22 * g_scale + hh - 32 * g_scale), C_CYAN,
                    "PC LAUNCHER  -  RECOMPILED, NATIVE, 60 FPS");
 
@@ -1086,5 +1514,5 @@ int main(int argc, char **argv) {
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
-    return 0;
+    return exit_code;
 }

@@ -285,7 +285,7 @@ extern "C" void controls_tab_draw(float scale) {
     {
         static const char *const names[] = {"Game layout", "Controller convention"};
         opt_choice("Confirm button", &g_settings.menu_confirm, names, 2, MENU_CONFIRM_CONTROLLER,
-                   "Which button confirms in LAS Recomp's menus.");
+                   "Which button confirms in ARMS Rearmed's menus.");
     }
 
     opt_end();

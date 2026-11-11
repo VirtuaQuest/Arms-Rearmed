@@ -1,0 +1,373 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "ARMS Rearmed",
+  "repo": "VirtuaQuest/Arms-Rearmed",
+  "min": "0.90.0-beta.36",
+  "requires": [
+    "start",
+    "setup",
+    "exit_codes",
+    "settings.ini",
+    "settings.choices",
+    "settings.slider",
+    "settings.groups"
+  ],
+  "inputs": [
+    {
+      "id": "base",
+      "label": "Your ARMS game: an XCI or NSP dumped from your own Switch (any region).",
+      "role": "game",
+      "formats": [
+        {
+          "type": "file",
+          "extensions": [
+            "xci",
+            "nsp"
+          ],
+          "requires": [
+            "keys"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "update",
+      "label": "The ARMS 5.4.0 update (NSP) from your own Switch. Keep both files where they are: the game reads its data from them.",
+      "role": "update",
+      "formats": [
+        {
+          "type": "file",
+          "extensions": [
+            "nsp"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "keys",
+      "label": "Your Switch's prod.keys",
+      "role": "key",
+      "shared": "switch.prod-keys"
+    }
+  ],
+  "prepare": {
+    "program": [
+      "armslauncher.exe"
+    ],
+    "args": [
+      "--prepare",
+      "--base={input:base}",
+      "--update={input:update}",
+      "--keys={input:keys}"
+    ],
+    "label": "Recompiling ARMS from your copy for your PC (about 10 minutes)",
+    "timeout": 5400
+  },
+  "start": {
+    "program": [
+      "armslauncher.exe"
+    ],
+    "args": [
+      "--play"
+    ]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [
+        {
+          "path": "{install}/larecomp.ini"
+        }
+      ],
+      "new": {
+        "fullscreen": "0",
+        "exclusive_fullscreen": "0",
+        "resolution": "match",
+        "upscaler": "auto",
+        "antialias": "off",
+        "aspect": "original",
+        "show_fps": "0",
+        "volume": "1.00",
+        "rumble": "1",
+        "background_input": "0"
+      }
+    }
+  ],
+  "settings": [
+    {
+      "id": "window",
+      "label": "Window mode",
+      "group": "Display",
+      "help": "F11 or Alt+Enter also switches in game.",
+      "choices": [
+        {
+          "label": "Windowed",
+          "set": {
+            "fullscreen": "0",
+            "exclusive_fullscreen": "0"
+          }
+        },
+        {
+          "label": "Borderless full screen",
+          "set": {
+            "fullscreen": "1",
+            "exclusive_fullscreen": "0"
+          }
+        },
+        {
+          "label": "Exclusive full screen",
+          "set": {
+            "fullscreen": "1",
+            "exclusive_fullscreen": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "fullscreen": "0",
+        "exclusive_fullscreen": "0"
+      }
+    },
+    {
+      "id": "aspect",
+      "label": "Screen shape",
+      "group": "Display",
+      "help": "Keep the game's 16:9 picture, or stretch it to the window.",
+      "choices": [
+        {
+          "label": "Original 16:9",
+          "set": {
+            "aspect": "original"
+          }
+        },
+        {
+          "label": "Stretch to the window",
+          "set": {
+            "aspect": "unlocked"
+          }
+        }
+      ],
+      "defaults": {
+        "aspect": "original"
+      }
+    },
+    {
+      "id": "resolution",
+      "label": "Internal resolution",
+      "group": "Quality",
+      "help": "How sharp the game is drawn. 1x is the Switch's own 1080p; Dynamic lowers it on the fly to hold 60 fps.",
+      "choices": [
+        {
+          "label": "Match the display",
+          "set": {
+            "resolution": "match"
+          }
+        },
+        {
+          "label": "1x (1080p)",
+          "set": {
+            "resolution": "1x"
+          }
+        },
+        {
+          "label": "2x (4K)",
+          "set": {
+            "resolution": "2x"
+          }
+        },
+        {
+          "label": "3x",
+          "set": {
+            "resolution": "3x"
+          }
+        },
+        {
+          "label": "4x",
+          "set": {
+            "resolution": "4x"
+          }
+        },
+        {
+          "label": "Dynamic (holds 60 fps)",
+          "set": {
+            "resolution": "dynamic"
+          }
+        },
+        {
+          "label": "75% of the display",
+          "set": {
+            "resolution": "75%"
+          }
+        },
+        {
+          "label": "50% of the display",
+          "set": {
+            "resolution": "50%"
+          }
+        }
+      ],
+      "defaults": {
+        "resolution": "match"
+      }
+    },
+    {
+      "id": "upscaler",
+      "label": "Upscaling",
+      "group": "Quality",
+      "help": "How a lower internal resolution is scaled up to the window. FSR 1 works on any graphics card.",
+      "choices": [
+        {
+          "label": "Automatic",
+          "set": {
+            "upscaler": "auto"
+          }
+        },
+        {
+          "label": "AMD FSR 1 (sharp)",
+          "set": {
+            "upscaler": "fsr1"
+          }
+        },
+        {
+          "label": "Bilinear (soft)",
+          "set": {
+            "upscaler": "bilinear"
+          }
+        }
+      ],
+      "defaults": {
+        "upscaler": "auto"
+      }
+    },
+    {
+      "id": "antialias",
+      "label": "Anti-aliasing",
+      "group": "Quality",
+      "help": "Smooths jagged edges.",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "antialias": "off"
+          }
+        },
+        {
+          "label": "SMAA",
+          "set": {
+            "antialias": "smaa"
+          }
+        }
+      ],
+      "defaults": {
+        "antialias": "off"
+      }
+    },
+    {
+      "id": "show_fps",
+      "label": "Frame rate counter",
+      "group": "Quality",
+      "help": "ARMS runs at its own 60 fps: its fights step once a frame.",
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "show_fps": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "show_fps": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "show_fps": "0"
+      }
+    },
+    {
+      "id": "volume",
+      "label": "Volume",
+      "group": "Sound and controllers",
+      "slider": {
+        "key": "volume",
+        "min": 0,
+        "max": 2,
+        "step": 0.05,
+        "format": "%.2f"
+      },
+      "defaults": {
+        "volume": "1.00"
+      }
+    },
+    {
+      "id": "rumble",
+      "label": "Rumble",
+      "group": "Sound and controllers",
+      "choices": [
+        {
+          "label": "On",
+          "set": {
+            "rumble": "1"
+          }
+        },
+        {
+          "label": "Off",
+          "set": {
+            "rumble": "0"
+          }
+        }
+      ],
+      "defaults": {
+        "rumble": "1"
+      }
+    },
+    {
+      "id": "background_input",
+      "label": "Controllers in the background",
+      "group": "Sound and controllers",
+      "help": "Let controllers work while the game isn't the window in front.",
+      "advanced": true,
+      "choices": [
+        {
+          "label": "Off",
+          "set": {
+            "background_input": "0"
+          }
+        },
+        {
+          "label": "On",
+          "set": {
+            "background_input": "1"
+          }
+        }
+      ],
+      "defaults": {
+        "background_input": "0"
+      }
+    }
+  ],
+  "saves": [
+    "{install}/save",
+    "{install}/larecomp.ini"
+  ],
+  "folders": {
+    "saves": [
+      {
+        "path": "{install}/save"
+      }
+    ],
+    "logs": [
+      {
+        "path": "{install}"
+      }
+    ]
+  },
+  "exit_codes": {
+    "0": "ok"
+  },
+  "looks": {
+    "graphics": "vulkan"
+  }
+}

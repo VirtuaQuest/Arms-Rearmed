@@ -144,6 +144,38 @@ after they should.
 - **Crash dialog:** `crash_explain.c` compared the game's file count with MUA3's (3836), so every ARMS crash said "Your
   game files are incomplete". The count isn't checked for ARMS (its versions differ; 5.4.0 has 3449 files).
 
+## ARMS Rearmed: a release that needs nothing installed, RecompLauncher (2026-11-11)
+
+The project is now **ARMS Rearmed** (github.com/VirtuaQuest/Arms-Rearmed): every name players see says so, the
+inherited "LAS Recomp" ones included (message boxes, the crash dialog, the CPU check, the log: `armsrecomp.log` and
+`armsrecomp-backup-*.log` next to the exe). The crash dialog's version and font advice is ARMS's now.
+
+- **Release zip** (`make dist`: `ARMS-Rearmed-v<VERSION>-Windows-x64.zip`). It holds no game code and no game files,
+  as LAS Recomp's: the game code is recompiled on the player's PC from their own copy. Inside: the runtime and the
+  launcher (release build: no console window, no debug info, the original icon), `armsgen` (tools/armsgen.py:
+  `nsp_extract.py` and `gen.py` frozen by PyInstaller, tools/armsgen.spec - output identical to the Python run), zig
+  0.17.0 slimmed by `tools/zig_slim.sh` (its runtime built ahead of time: a link builds nothing), `gamelib-src/` (the
+  headers the generated C needs, `gamelib.id`: the library id the exe wants and the C flags), an LGPL-only FFmpeg
+  (`tools/build_deps_windows.sh`: MSYS2's is a GPL build with x264 / x265 / xvid), the fonts with their licenses and
+  `docs/THIRD_PARTY.md` (every bundled component, its license and its source). `make dist` fails if game code
+  (`f_70...` symbols), game files, GPL codec libraries or this machine's paths are inside.
+- **The launcher's release mode** (armsgen, zig and gamelib-src next to it): INSTALL runs `armsgen extract`,
+  `armsgen gen` for both modules, then builds the game code itself (`build_gamelib`): every generated file compiled
+  by zig in parallel (biggest first; as many as the cores and the memory allow, ~1.5 GB each), linked with
+  `zig lld-link` against `armsrecomp.dll.a`; `armsgame.dll` + `.id` land next to the game, the generated C and the
+  objects (~450 MB) are deleted. Then the shaders are prepared. The zig-built library plays as the clang one does
+  (Versus to the fight at 60 fps); the compile takes about 10 minutes on 16 threads.
+- **RecompLauncher** (`recomplauncher.json`, checked against its schema): Easy Setup asks for the XCI / NSP, the
+  5.4.0 update and `prod.keys` (its shared Switch key); its prepare step runs `armslauncher --prepare` (no window,
+  `progress <0..1> <text>` lines, the log in `prepare.log`); Play runs `armslauncher --play`, which starts the game
+  and waits for it (play time, save backups and crash reports follow the game), and rebuilds the game code first
+  when a release update changed the recompiler. The game's page has the display, quality, sound and controller
+  settings (`larecomp.ini`); saves are `save/`.
+- **Original icon** (`tools/make_original_icon.py` -> `docs/icon/`): the release's exes and windows use it. A source
+  build still uses the game's own icon from your dump; the release never does.
+- The shader preparation logs `[shader] preparation: progress <done>/<total>` in prepare-only runs (the launcher's
+  progress).
+
 What this project changed relative to [LAS Recomp](https://github.com/peiikai/LASRecomp) (its recompiler and Switch
 runtime), why, and where. It also lists the debugging switches, the test routes, the known gaps and the next steps.
 It started as DOAX3 Recomp (the sections from "Project setup" to "Test routes" are that work, which MUA3 inherits:

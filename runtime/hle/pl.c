@@ -317,7 +317,7 @@ static void load_fonts(void) {
     if (!fonts[F_STD].addr && rt_resource("DejaVuSans.ttf", "third_party/fonts/DejaVu/DejaVuSans.ttf", bundled, sizeof bundled))
         load_one_checked(bundled, &fonts[F_STD], true);
     if (!fonts[F_STD].addr)  // (only a broken install: the app ships DejaVu Sans)
-        FATAL("no font for the game's text: import the Switch fonts in Settings (Game font), or reinstall LAS Recomp\n");
+        FATAL("no font for the game's text: import the Switch fonts in Settings (Game font), or reinstall ARMS Rearmed\n");
     static const char *const type_names[N_FONT_TYPES] = {"Standard", "ChineseSimple", "ChineseSimpleExt",
                                                          "ChineseTraditional", "Korean", "NintendoExt"};
     for (int t = 1; t < N_FONT_TYPES; t++)  // (font_for: a type without its own font serves Standard's)

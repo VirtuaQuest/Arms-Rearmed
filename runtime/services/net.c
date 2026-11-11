@@ -81,7 +81,7 @@ HLE_FUNC("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", nifm_api_submit_wait) {
     if (nlog++ < 20) LOG("[nifm] SubmitNetworkRequestAndWait: no connection\n");
     // The player asked to go online (Party Match, Friends, ...): on a console the system's "couldn't connect" dialog
     // would say why the game goes back. (Not the game's own quiet check while it starts.)
-    if (menu_frames_shown() > 0) menu_notice("Online play isn't available in ARMS Recomp.", 5);
+    if (menu_frames_shown() > 0) menu_notice("Online play isn't available in ARMS Rearmed.", 5);
 }
 HLE_FUNC("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", nifm_api_handle_error) {
     static int nlog;
@@ -133,7 +133,7 @@ static void ldn_user(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 400: case 402:  // Initialize, InitializeSystem2
         LOG("[ldn] Initialize: local wireless is off (as in airplane mode)\n");
-        menu_notice("Local wireless play isn't available in ARMS Recomp.", 5);
+        menu_notice("Local wireless play isn't available in ARMS Rearmed.", 5);
         resp->result = LDN_RESULT_AIRPLANE_MODE;
         break;
     case 401: break;  // Finalize

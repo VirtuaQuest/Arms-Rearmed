@@ -72,7 +72,7 @@ bool game_version_select(const char *game_dir, char *why, size_t why_size) {
     const GameVersion *v = game_version_by_build_id(id);
     if (!v) {
         snprintf(why, why_size, "these game files are an unsupported version of the game (main build ID "
-                 "%02X%02X%02X%02X%02X%02X%02X%02X): ARMS Recomp needs ARMS 5.4.0 (the base "
+                 "%02X%02X%02X%02X%02X%02X%02X%02X): ARMS Rearmed needs ARMS 5.4.0 (the base "
                  "game with its last update: tools/nsp_extract.py --update)",
                  id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
         return false;

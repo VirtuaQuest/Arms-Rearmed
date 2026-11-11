@@ -1315,7 +1315,7 @@ void ui_window_init(void) {
                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     }
-    window = SDL_CreateWindow("ARMS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow("ARMS Rearmed", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the window mode applies from the start (not only once the game runs); test windows stay windows
@@ -1387,8 +1387,8 @@ int ui_run(void) {
             if (pct != shown) {
                 shown = pct;
                 char t[96];
-                if (total > 0) snprintf(t, sizeof t, "ARMS Recomp - preparing shaders %d%% (first start after an install or update)", pct);
-                else snprintf(t, sizeof t, "ARMS Recomp");
+                if (total > 0) snprintf(t, sizeof t, "ARMS Rearmed - preparing shaders %d%% (first start after an install or update)", pct);
+                else snprintf(t, sizeof t, "ARMS Rearmed");
                 SDL_SetWindowTitle(window, t);
             }
         }

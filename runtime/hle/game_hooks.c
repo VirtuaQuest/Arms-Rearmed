@@ -63,8 +63,12 @@ void game_frame_rate(int fps) {
     }
 }
 
-// ---- version, for the shader caches' tag (runtime/nvn/shader_prep.c)
-const char *larecomp_version(void) { return "arms-dev"; }
+// ---- version, for the log's [info] line and the shader caches' tag (runtime/nvn/shader_prep.c): the Makefile's
+// VERSION (with -dev in a source build)
+#ifndef ARMS_VERSION
+#define ARMS_VERSION "dev"
+#endif
+const char *larecomp_version(void) { return ARMS_VERSION; }
 
 // ---- input (runtime/hle/input.c)
 bool mirror_input(void) { return false; }
