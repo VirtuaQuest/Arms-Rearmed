@@ -83,7 +83,7 @@ void rt_crash_explain(char *out, size_t n, const char *log_path) {
                  "game code for these game files by itself.");
     } else if (has("unsupported version of the game")) {
         snprintf(head, sizeof head, "Wrong version of the game");
-        snprintf(what, sizeof what, "ARMS Rearmed needs ARMS version 5.4.0: the base game with its 5.4.0 update. Set "
+        snprintf(what, sizeof what, "ARMS Rearmed needs ARMS version 5.4.0 or 5.5.1: the base game with one of those updates. Set "
                  "up those game files again (GAME FILES in the launcher, or Set up in RecompLauncher).");
     } else if (has("no font for the game's text")) {
         snprintf(head, sizeof head, "No font for the game's text");

@@ -5,9 +5,12 @@
 #include <math.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
+#include "../../platform.h"  // (mkdir on Windows: LARECOMP_DUMP_TEX)
 #include "../rqueue.h"
 #include "vk.h"
 #include "record.h"
@@ -841,6 +844,19 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
             }
             if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, lin, l.w, l.h, row);
+            if (lv == 0 && layer == 0) {  // (debug) LARECOMP_DUMP_TEX=<w>x<h>: level 0 of each such texture, linear, as
+                // uploaded (after texpatch's edits), to build/texdump/<guest address>_<w>x<h>_f<NVN format>.bin
+                static int dw = -1, dh;
+                if (dw < 0) { const char *e = getenv("LARECOMP_DUMP_TEX"); if (!e || sscanf(e, "%dx%d", &dw, &dh) != 2) dw = 0; }
+                if (dw && (int)l.w == dw && (int)l.h == dh) {
+                    char p[128];
+                    mkdir("build/texdump", 0755);
+                    snprintf(p, sizeof p, "build/texdump/%llx_%ux%u_f%x.bin", (unsigned long long)t->addr, l.w, l.h, t->format);
+                    FILE *f = fopen(p, "wb");
+                    if (f) { fwrite(lin, 1, sz, f); fclose(f); }
+                    LOG("[texdump] %s (bpb %u, block %ux%u, label %s)\n", p, fi->bpb, fi->bw, fi->bh, t->label);
+                }
+            }
             if (expand) {  // RGB8 -> RGBA8
                 uint8_t *o = s.ptr;
                 uint64_t n = (uint64_t)l.wb * l.hb * l.d;
@@ -886,6 +902,28 @@ void renderer_mark_gpu_owned(NvnTexture *t) {
     if (b->scalable) { b->sx = g_rs_x; b->sy = g_rs_y; }
 }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
+
+// A render target drawn in the same pass as scaled ones, of their guest size, follows their scale: its image is made
+// again at the render scale (its contents are the pass's to write). ARMS's scene pass draws an R8 fighter mask beside
+// the colour target, and creates the mask without the compressible flag (tex_scalable's test for a render target):
+// left at the guest size, it clipped the whole pass to it - above 1x the scene and the fighters showed in the
+// top-left part of the screen only (and the black fighter silhouettes everywhere else). false: nothing changed.
+bool vk_tex_follow_scale(NvnTexture *t) {
+    TexBackend *b = t ? tex_backend(t) : NULL;
+    if (!b || b->scalable || getenv("LARECOMP_NO_SCALE")) return false;
+    if (t->target != 1 || t->samples > 1 || t->width < 32 || t->height < 16) return false;
+    float a = (float)t->width / (float)t->height;
+    if (!(a > 1.74f && a < 1.81f)) return false;
+    static int nlog;
+    if (nlog++ < 8) LOG("[vk] render target %ux%u fmt %#x (flags %#x) drawn with scaled ones: scaled too\n", t->width, t->height,
+                        t->format, t->flags);
+    b->scalable = true;
+    destroy_image(b);
+    create_image(t, b);
+    b->gpu_owned = true;
+    b->sx = g_rs_x, b->sy = g_rs_y;
+    return true;
+}
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.

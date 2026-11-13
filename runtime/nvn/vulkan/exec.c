@@ -1274,6 +1274,16 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 static float pass_sx = 1, pass_sy = 1;
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
+static uint64_t ws_scene_frame = ~0ull;  // widescreen: the frame a widened 3D scene was last drawn in
+// widescreen: this draw's camera block (constant buffer slot 0) is given with its view-projection widened (x rows 3
+// and 24 scaled by ws_cam_k[0], y rows 4 and 25 by ws_cam_k[1]): cbuf_info, vertex and fragment stages
+static bool ws_cam_patch;
+static float ws_cam_k[2] = {1, 1};
+// and the vertex shader places vertices with copies of the camera's matrices in its other constant buffers (the
+// effects: their own block holds the projection and the view-projection): those copies are widened the same way
+static bool ws_copy_patch;
+static float ws_cam_rows[2][4];  // the camera's view-projection and projection x rows (what a copy is matched by)
+uint64_t renderer_exec_frame(void);
 static float tex_fr[2][64][2];  // per bound texture slot: the part of the texture the contents occupy (Dynamic)
 static uint32_t tex_wh[2][64][2];
 
@@ -1409,6 +1419,27 @@ static void begin_pass(void) {
                 t0 ? t0->height : 0, t0 ? t0->width * dsx : 0, t0 ? t0->height * dsy : 0, t0 ? t0->format : 0,
                 st.rt.depth ? "yes" : "no");
     }
+    {   // attachments of one guest size share one scale: an unscaled one beside a scaled one is scaled too
+        // (textures.c vk_tex_follow_scale: ARMS's R8 fighter mask), else the pass is clipped to the smaller image
+        extern bool vk_tex_follow_scale(NvnTexture *t);
+        NvnTexture *all[9];
+        int n = 0;
+        for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i]) all[n++] = st.rt.color[i];
+        if (st.rt.depth) all[n++] = st.rt.depth;
+        NvnTexture *ref = NULL;
+        for (int i = 0; i < n && !ref; i++) {
+            float sx = 1, sy = 1;
+            renderer_texture_scale(all[i], &sx, &sy);
+            if (sx != 1 || sy != 1) ref = all[i];
+        }
+        if (ref)
+            for (int i = 0; i < n; i++) {
+                float sx = 1, sy = 1;
+                renderer_texture_scale(all[i], &sx, &sy);
+                if (all[i] != ref && sx == 1 && sy == 1 && all[i]->width == ref->width && all[i]->height == ref->height)
+                    vk_tex_follow_scale(all[i]);
+            }
+    }
     VkRenderingAttachmentInfo ca[8], da = {0}, sa = {0};
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
     pass_ncolor = (uint32_t)st.rt.ncolor;
@@ -1498,6 +1529,45 @@ static void begin_pass(void) {
         }
     }
     pass_w = minw; pass_h = minh;
+    {   // (debug) LARECOMP_LOG_PASS_MISMATCH=1: a pass whose attachments have different sizes (the pass is clipped to
+        // the smallest: one target left unscaled draws the frame into a corner) - each combination once
+        static int on = -1;
+        if (on < 0) on = getenv("LARECOMP_LOG_PASS_MISMATCH") != NULL;
+        uint32_t maxw = 0;
+        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i] && st.rt.color[i]->backend) { TexBackend *b = st.rt.color[i]->backend; if (b->width > maxw) maxw = b->width; }
+        if (st.rt.depth && st.rt.depth->backend && ((TexBackend *)st.rt.depth->backend)->width > maxw) maxw = ((TexBackend *)st.rt.depth->backend)->width;
+        static uint64_t seen[64];
+        static int nseen;
+        bool off_scale = false;  // (an attachment whose image isn't its guest size times its scale)
+        for (int i = 0; i < st.rt.ncolor; i++) {
+            NvnTexture *t = st.rt.color[i];
+            TexBackend *b = t ? t->backend : NULL;
+            float tsx = 1, tsy = 1;
+            if (b) { renderer_texture_scale(t, &tsx, &tsy); off_scale |= labs((long)b->width - lroundf(t->width * tsx)) > 2; }
+        }
+        if (on && (maxw > minw || off_scale) && nseen < 64) {
+            uint64_t key = 0;
+            for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) key = key * 31 + st.rt.color[i]->format * 7919u + st.rt.color[i]->width;
+            if (st.rt.depth) key = key * 31 + st.rt.depth->format * 104729u + st.rt.depth->width;
+            bool dup = false;
+            for (int i = 0; i < nseen; i++) dup |= seen[i] == key;
+            if (!dup) {
+                seen[nseen++] = key;
+                LOG("[passmis] pass %ux%u (largest %u):", minw, minh, maxw);
+                for (int i = 0; i < st.rt.ncolor; i++) {
+                    NvnTexture *t = st.rt.color[i];
+                    TexBackend *b = t ? t->backend : NULL;
+                    if (b) LOG(" c%d guest %ux%u fmt %#x flags %#x -> %ux%u scalable %d s %.2f", i, t->width, t->height, t->format, t->flags, b->width, b->height, b->scalable, b->sx);
+                }
+                if (st.rt.depth && st.rt.depth->backend) {
+                    NvnTexture *t = st.rt.depth;
+                    TexBackend *b = t->backend;
+                    LOG(" d guest %ux%u fmt %#x flags %#x -> %ux%u scalable %d s %.2f", t->width, t->height, t->format, t->flags, b->width, b->height, b->scalable, b->sx);
+                }
+                LOG("\n");
+            }
+        }
+    }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = pass_ncolor ? ca : NULL,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
@@ -3589,6 +3659,32 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
+    if (ws_cam_patch && idx == 0 && (stage == 0 || stage == 1) && size >= 5 * 16 && size <= 0x10000) {
+        // (widescreen: the camera's view-projection widened, the projection itself as the game wrote it - the
+        // fighters' shading reads that)
+        static float cam[0x10000 / 4];
+        memcpy(cam, (const void *)(uintptr_t)r.addr, size);
+        for (int i = 0; i < 4; i++) cam[3 * 4 + i] *= ws_cam_k[0], cam[4 * 4 + i] *= ws_cam_k[1];
+        const float *pp = cam + 28 * 4;  // (the previous frame's projection, rows 28-31; its view-projection 24-27)
+        if (size >= 32 * 16 && pp[12] == 0.0f && pp[13] == 0.0f && pp[14] == -1.0f && pp[15] == 0.0f)
+            for (int i = 0; i < 4; i++) cam[24 * 4 + i] *= ws_cam_k[0], cam[25 * 4 + i] *= ws_cam_k[1];
+        return ubo_span(vk_transient_copy(cam, size, 256), size);
+    }
+    if (ws_copy_patch && idx > 0 && stage == 0 && size >= 32 && size <= 0x10000) {
+        // (widescreen: copies of the camera's view-projection / projection in the vertex shader's own buffers - an x
+        // row matched exactly - widened like the camera's: x row by ws_cam_k[0], the y row after it by ws_cam_k[1])
+        static float blk[0x10000 / 4];
+        const float *src = (const float *)(uintptr_t)r.addr;
+        bool hit = false;
+        for (uint64_t o = 0; o + 8 <= size / 4; o += 4)
+            for (int m = 0; m < 2; m++)
+                if (!memcmp(src + o, ws_cam_rows[m], 16)) {
+                    if (!hit) memcpy(blk, src, size), hit = true;
+                    for (int i = 0; i < 4; i++) blk[o + i] *= ws_cam_k[0], blk[o + 4 + i] *= ws_cam_k[1];
+                }
+        if (hit && g_debug_frame && getenv("LARECOMP_LOG_WIDE")) LOG("[wide]   slot %d: camera copies widened\n", idx);
+        if (hit) return ubo_span(vk_transient_copy(blk, size, 256), size);
+    }
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
@@ -6180,6 +6276,28 @@ static void draw_(CmdRec *r, bool indexed) {
         if (fknown) prof_hook_known++;
     }
 #define FTEX(i) (hook_pass ? ftex[i] : shader_texture_object(1, &pr->fi->tex[i]))
+    {   // the Rearmed boot splash (texpatch.c, "Rearmed logo & splash art"): its art carries its own words, so the game's
+        // text over the splash (the thumbs-up grip, the straps: drawn after it, from the message fonts' 1024x1024 BC4
+        // sheets and the button-icon sheet) isn't drawn in the frames that draw the splash
+        extern bool texpatch_is_brand_splash(int id);
+        extern bool texpatch_brand_on(void);
+        extern bool texpatch_is_icon_sheet(int id);
+        extern uint64_t renderer_exec_frame(void);
+        static uint64_t splash_frame = ~0ull;
+        uint64_t now = renderer_exec_frame();
+        for (int i = 0; i < pr->fi->ntex && fknown; i++) {
+            const NvnTexture *t = FTEX(i);
+            const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+            if (b && b->tp > 0 && texpatch_is_brand_splash(b->tp - 1)) splash_frame = now;
+        }
+        if (splash_frame == now && texpatch_brand_on())
+            for (int i = 0; i < pr->fi->ntex; i++) {
+                const NvnTexture *t = FTEX(i);
+                const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+                if (t && ((t->format == 0x49 && t->width == 1024 && t->height == 1024) ||
+                          (b && b->tp > 0 && texpatch_is_icon_sheet(b->tp - 1)))) { SKIP(SK_HIDDEN); return; }
+            }
+    }
     {   // the Items page's cursor brackets while the cursor is on the companion card (runtime/hle/pets.c)
         extern bool pets_hide_item_cursor(void);
         extern bool texpatch_is_item_cursor(int id);
@@ -6229,7 +6347,60 @@ static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROF_T0();
     uint32_t dyn[2 * MAX_BIND], ndyn = 0;  // (set reuse: the sets' dynamic offsets, vertex then fragment)
-    VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndyn);
+    // widescreen (runtime/hle/widescreen.c): draws into the scene's widened targets (scaled, not the presented image)
+    // whose camera (constant buffer slot 0) is a perspective scene camera see a wider frustum. The camera block's
+    // view-projection is widened (both stages: positions and the screen positions shaders derive from it agree - the
+    // fog volume samples the depth at those); vertex shaders that place vertices with the projection instead (the
+    // fighters: view, then projection) have their clip position scaled after them. The projection itself stays as
+    // the game wrote it: the fighters' shading reads it, and widening it turned them black.
+    float ws_row[4] = {1, 1, 0, 0};
+    ws_cam_patch = ws_copy_patch = false;
+    {
+        float wsx = 1, wsy = 1;
+        NvnTexture *wt = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0] : st.rt.depth;
+        if (wt) renderer_texture_scale(wt, &wsx, &wsy);
+        const float *cam = (const float *)(uintptr_t)st.ubuf[0][0].addr;
+        extern bool widescreen_scene_camera(const float *block, uint64_t size, float *kx, float *ky);
+        float kx = 1, ky = 1;
+        if (wt && wt->width >= 256 && fabsf(wsx - wsy) > 0.01f * wsy && cam &&
+            !(st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) &&
+            widescreen_scene_camera(cam, st.ubuf[0][0].size, &kx, &ky)) {
+            if (r->x[2] > 6) ws_scene_frame = renderer_exec_frame();  // (a widened 3D scene: backdrops cover the window)
+            ws_cam_patch = true, ws_cam_k[0] = kx, ws_cam_k[1] = ky;
+            // (only a vertex shader that places vertices with the camera's projection: slot 0 stays bound from
+            // earlier draws, and full-screen passes that don't read it - the half-size depth's downsample - were
+            // squeezed too: a strip at the left edge kept stale depth, a lighter band left of the 16:9 area in fights)
+            uint64_t rows = pr->vi->cb3_rows;
+            if ((pr->vi->cbuf_mask & (1u << 3)) && (rows & (1ull << 7 | 1ull << 8)) && !(rows & (1ull << 3 | 1ull << 4)))
+                ws_row[0] = kx, ws_row[1] = ky;
+            if (!((pr->vi->cbuf_mask & (1u << 3)) && (rows & (1ull << 3 | 1ull << 4 | 1ull << 7 | 1ull << 8)))) {
+                ws_copy_patch = true;  // (the camera's matrices, if anywhere, in its own buffers: the effects)
+                memcpy(ws_cam_rows[0], cam + 3 * 4, 16), memcpy(ws_cam_rows[1], cam + 7 * 4, 16);
+            }
+            if (g_debug_frame && getenv("LARECOMP_LOG_WIDE")) {  // (debug: draws the camera's matrices reach otherwise)
+                const float *c = cam;
+                int hits = 0;
+                char where[160] = "";
+                for (int k = 1; k < 18; k++) {
+                    if (!(pr->vi->cbuf_mask & (1u << (k + 3))) || !st.ubuf[0][k].addr) continue;
+                    const float *u = (const float *)(uintptr_t)st.ubuf[0][k].addr;
+                    uint64_t n = st.ubuf[0][k].size / 4;
+                    for (uint64_t o = 0; o + 4 <= n && o < 4096; o += 4)
+                        for (int row = 3; row <= 7; row += 4)
+                            if (fabsf(u[o] - c[row * 4]) < 1e-5f && fabsf(u[o + 1] - c[row * 4 + 1]) < 1e-5f &&
+                                fabsf(u[o + 2] - c[row * 4 + 2]) < 1e-5f && fabsf(c[row * 4]) + fabsf(c[row * 4 + 2]) > 1e-3f && hits < 6) {
+                                size_t l = strlen(where);
+                                snprintf(where + l, sizeof where - l, " slot%d+%llu=%s", k, (unsigned long long)o * 4, row == 3 ? "VP" : "P");
+                                hits++;
+                            }
+                }
+                LOG("[wide] vs %llx rows %llx%s post %d count %llu rt %ux%u%s\n", (unsigned long long)st.program->stages[0].code_addr,
+                    (unsigned long long)rows, (pr->vi->cbuf_mask & (1u << 3)) ? "" : " (no slot 0)", ws_row[0] != 1,
+                    (unsigned long long)r->x[2], wt->width, wt->height, where);
+            }
+        }
+    }
+    VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, ws_row, NULL, 0, 0, 0, NULL, dyn, &ndyn);
     PROF_ADD(prof_sets);
     VkDescriptorImageInfo fii[64];
     uint64_t prof_tx_ = prof ? SDL_GetTicksNS() : 0;
@@ -6256,7 +6427,38 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 #undef FTEX
     if (prof) prof_tex += SDL_GetTicksNS() - prof_tx_;
-    if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
+    // widescreen: ARMS draws its 2D UI into a scaled intermediate (its dynamic-resolution canvas) that a full-target quad
+    // then blits to the presented image; that intermediate (seen in the frame before) is treated like the presented one
+    typedef struct { NvnTexture *t; void *backend; uint64_t addr; uint32_t w, h, fmt, pad; } UiCanvas;
+    static UiCanvas ui_layers[4];  // (the last few: one per dynamic-resolution size)
+    NvnTexture *ui_layer = NULL;
+    NvnTexture *ui_ct = st.rt.ncolor ? st.rt.color[0] : NULL;
+    if (ui_ct && renderer_texture_presented(ui_ct) && pr->fi->ntex == 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 &&
+        st.viewport[0][1] == 0) {  // (the blit covers the presented image, or the part of it its canvas's size: ARMS's
+                                   // dynamic resolution presents a crop)
+        NvnTexture *src = shader_texture_object(1, &pr->fi->tex[0]);
+        if (src && !renderer_texture_presented(src) && fabsf(tex_sc[1][0][0] - tex_sc[1][0][1]) > 0.01f * tex_sc[1][0][1] &&
+            ((st.viewport[0][2] >= ui_ct->width && st.viewport[0][3] >= ui_ct->height) ||
+             (st.viewport[0][2] >= src->width && st.viewport[0][3] >= src->height)))
+            ui_layer = src;
+        UiCanvas c;
+        memset(&c, 0, sizeof c);
+        if (ui_layer) c = (UiCanvas){ui_layer, ui_layer->backend, ui_layer->addr, ui_layer->width, ui_layer->height, ui_layer->format, 0};
+        if (ui_layer && memcmp(&ui_layers[0], &c, sizeof c)) {
+            int k = 1;
+            while (k < 3 && memcmp(&ui_layers[k], &c, sizeof c)) k++;
+            memmove(ui_layers + 1, ui_layers, k * sizeof *ui_layers);
+            ui_layers[0] = c;
+        }
+    }
+    // (a canvas still: the same texture object, image, size and format - the game reuses its texture objects, and a
+    // stale entry boxed the scene's small targets: a seam at the box's edge, fighters' masks offset)
+    bool ui_canvas = false;
+    for (int k = 0; ui_ct && k < 4; k++)
+        ui_canvas |= ui_layers[k].t == ui_ct && ui_layers[k].backend == ui_ct->backend && ui_layers[k].addr == ui_ct->addr &&
+                     ui_layers[k].w == ui_ct->width &&
+                     ui_layers[k].h == ui_ct->height && ui_layers[k].fmt == ui_ct->format && ui_ct->width >= 960;
+    if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && ui_ct && (renderer_texture_presented(ui_ct) || ui_canvas)) {
         // Draws into the swapchain image (see renderer.m): composites fill the window, UI goes in a centred 16:9 box.
         bool reads_scene = false;
         for (int i = 0; i < pr->fi->ntex && i < 64; i++)
@@ -6269,6 +6471,8 @@ static void draw_(CmdRec *r, bool indexed) {
         bool fullscreen_fill = pr->fi->ntex == 0 && fullscreen_quad &&
                                !widescreen_ui_pane_partial((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size);
         if (fullscreen_quad && !reads_scene && pr->fi->ntex == 1 && (tex_sc[1][0][0] != 1 || tex_sc[1][0][1] != 1)) reads_scene = true;
+        for (int i = 0; fullscreen_quad && !reads_scene && i < pr->fi->ntex && i < 64; i++)  // (a widened texture: the scene)
+            if (fabsf(tex_sc[1][i][0] - tex_sc[1][i][1]) > 0.01f * tex_sc[1][i][1]) reads_scene = true;
         static uint64_t wide_frame = ~0ull;
         extern uint64_t renderer_exec_frame(void);  // (the frame being translated)
         if (reads_scene) wide_frame = renderer_exec_frame();
@@ -6280,13 +6484,60 @@ static void draw_(CmdRec *r, bool indexed) {
         }
         bool composite = reads_scene || fade_fill || (fullscreen_fill && wide_frame == renderer_exec_frame());
         if (!composite) wide_frame = ~0ull;
+        static int ui_panes;  // (the 2D draws since the last composite: 0 = the bottom of the UI, a backdrop)
+        if (composite) ui_panes = 0;
         if (!composite) {
             int pw, ph;
             pass_size(&pw, &ph);
-            float u = fminf(pass_sx, pass_sy);
-            vp_sx = vp_sy = u;
-            vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
-            vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
+            float u = fminf(pass_sx, pass_sy), ux = u, uy = u;
+            bool black_bars = false;
+            // a pane that spans the screen (runtime/hle/widescreen.c): a flat colour or gradient (textures of 64 texels
+            // at most) fills the window; the layout's own backdrop covers it (scaled evenly, the overflow cropped) when a
+            // widened 3D scene is drawn (character select); another picture spanning the width stays in the 16:9 box,
+            // and when it's the bottom of the 2D (a 2D screen's backdrop: the strap screen, the title, the menus, the
+            // ARMS LIVE broadcast's still) the bars are black, as in Original 16:9 - the game renders a hidden 3D scene
+            // under those; the rest is boxed (over the fights' widened view)
+            extern int widescreen_ui_pane(const float *u, uint64_t size);
+            int kind = widescreen_ui_pane((const float *)(uintptr_t)st.ubuf[0][0].addr, st.ubuf[0][0].size);
+            if (kind == 1 || kind == 2 || kind == 5) {
+                bool flat = true;
+                for (int i = 0; i < pr->fi->ntex && i < 64; i++)
+                    if (tex_wh[1][i][0] > 64 || tex_wh[1][i][1] > 64) flat = false;
+                static uint64_t boxed_frame = ~0ull;  // (a boxed full-screen picture: what's drawn over it stays boxed)
+                // (cover: the layout's own backdrop, or a full-screen picture over the 3D - the fights' damage
+                // flash, the KO wipe - when a widened 3D scene is drawn and no boxed 2D screen is under it)
+                bool cover = !flat && (kind == 1 || (kind == 5 && ui_panes > 0)) &&
+                             ws_scene_frame == renderer_exec_frame() && boxed_frame != renderer_exec_frame();
+                if (!flat && !cover) {  // boxed; the backdrop of a 2D screen (the bottom picture): black bars
+                    if (ui_panes == 0) black_bars = true, boxed_frame = renderer_exec_frame();
+                } else if (boxed_frame == renderer_exec_frame()) {
+                } else if (flat) ux = pass_sx, uy = kind == 2 ? u : pass_sy;
+                else if (cover) ux = uy = fmaxf(pass_sx, pass_sy);
+            }
+            if (g_debug_frame && getenv("LARECOMP_LOG_UIPANE")) {  // (debug: how each 2D draw is placed)
+                const float *ub = (const float *)(uintptr_t)st.ubuf[0][0].addr;
+                NvnTexture *t0 = pr->fi->ntex ? shader_texture_object(1, &pr->fi->tex[0]) : NULL;
+                TexBackend *b0 = t0 ? (TexBackend *)t0->backend : NULL;
+                LOG("[uibox] kind %d scale %.3f %.3f%s ubo %u ntex %d tex0 %ux%u%s vtx %u", kind, ux, uy, black_bars ? " (black bars)" : "",
+                    (unsigned)st.ubuf[0][0].size, pr->fi->ntex, pr->fi->ntex ? tex_wh[1][0][0] : 0,
+                    pr->fi->ntex ? tex_wh[1][0][1] : 0, b0 && b0->gpu_owned ? " (rendered)" : "", (unsigned)r->x[2]);
+                if (ub && st.ubuf[0][0].size >= 544) LOG(" rect %g %g %g %g mv %g %g %g / %g %g %g", ub[132], ub[133], ub[134], ub[135],
+                                                          ub[16], ub[17], ub[19], ub[20], ub[21], ub[23]);
+                LOG("\n");
+            }
+            vp_sx = ux, vp_sy = uy;
+            vp_ox = (pw - st.rt.color[0]->width * ux) * 0.5f;
+            vp_oy = (ph - st.rt.color[0]->height * uy) * 0.5f;
+            ui_panes++;
+            int bar = (int)floorf(vp_ox), bar2 = (int)ceilf(vp_ox + st.rt.color[0]->width * ux);
+            if (black_bars && bar > 0 && bar2 < pw && pass_ncolor && pass_color[0] != VK_FORMAT_UNDEFINED) {
+                // (black, as in Original 16:9: the game may render a hidden 3D scene under its full-screen art)
+                VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0,
+                                       .clearValue.color.float32 = {0, 0, 0, 1}};
+                VkClearRect cr[2] = {{{{0, 0}, {(uint32_t)bar, (uint32_t)ph}}, 0, 1},
+                                     {{{bar2, 0}, {(uint32_t)(pw - bar2), (uint32_t)ph}}, 0, 1}};
+                rec_CmdClearAttachments(cb, 1, &a, 2, cr);
+            }
         }
     }
     {   // camera-attached effects sized for 16:9 are widened with the view (runtime/hle/widescreen.c)

@@ -112,14 +112,4 @@ bool pot_level_active(void) { return false; }
 void pot_gold_tint(float tint[8]) { (void)tint; }
 bool pot_instance_gold(const float *m) { (void)m; return false; }
 bool pot_tint(const float *m, float tint[8], uint64_t mesh) { (void)m, (void)tint, (void)mesh; return false; }
-bool widescreen_allowed(void) { return false; }
-void widescreen_backdrop_seen(uint64_t hash) { (void)hash; }
-float widescreen_effect_stretch(uint64_t fs_hash) { (void)fs_hash; return 1.0f; }
-void widescreen_frame_end(uint64_t frame) { (void)frame; }
-void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double *vx, double *vy, double *vw, double *vh) {
-    (void)frame, (void)shape, (void)vx, (void)vy, (void)vw, (void)vh;
-    crop[0] = crop[1] = 0, crop[2] = crop[3] = 1;  // the whole frame, the viewport as it is
-}
-void widescreen_scene_ubo(const float *u, uint64_t size) { (void)u, (void)size; }
-void widescreen_set_factor(float f) { (void)f; }
-bool widescreen_ui_pane_partial(const float *u, uint64_t size) { (void)u, (void)size; return false; }
+// (the widescreen hooks: runtime/hle/widescreen.c)

@@ -22,7 +22,7 @@ const char *const g_screen_filters[N_SCREEN_FILTERS] = {"Off", "Game Boy", "Game
 static const char *const k_screen_filter_keys[N_SCREEN_FILTERS] = {"off", "gameboy", "gameboy_color", "grayscale"};  // (else: off)
 
 Settings g_settings = {
-    .aspect = ASPECT_ORIGINAL,  // (ARMS has no widescreen view: Unlocked stretches)
+    .aspect = ASPECT_ORIGINAL,  // (Unlocked: the wider view, runtime/hle/widescreen.c)
     .fullscreen = false,
     .volume = 1.0f,
     .reverb = true,
@@ -31,9 +31,10 @@ Settings g_settings = {
     .rumble_strength = 100,
     .controller_light = false,  // (it showed Link's health: nothing for ARMS)
     .menu_confirm = MENU_CONFIRM_CONTROLLER,
-    .show_fps = false,
+    .show_fps = FPS_OFF,
     .frame_rate = 30,
     .inv_keys = true,
+    .rearmed_art = true,
     .tracker = true,
     .tracker_filters = -1,
     .chaos_letters = CHAOS_LETTERS_MAP,
@@ -159,7 +160,10 @@ void settings_load(void) {
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
-        else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
+        else if (!strcmp(key, "show_fps")) {  // (0 off, 1 the rate - as the old on - , 2 the rate and its details)
+            int v = atoi(val);
+            g_settings.show_fps = v < FPS_OFF ? FPS_OFF : v > FPS_ADVANCED ? FPS_ADVANCED : v;
+        }
         else if (!strcmp(key, "fps60")) g_settings.frame_rate = atoi(val) ? 60 : 30;  // (the first version's key)
         else if (!strcmp(key, "frame_rate")) g_settings.frame_rate = atoi(val) >= 120 ? 120 : atoi(val) >= 60 ? 60 : 30;
         else if (!strcmp(key, "resolution")) {  // (auto: never chosen, the GPU's default)
@@ -185,9 +189,10 @@ void settings_load(void) {
         else if (!strcmp(key, "move_360")) g_settings.move_360 = atoi(val) != 0;
         else if (!strcmp(key, "blur_removal")) g_settings.blur_removal = atoi(val) != 0;
         else if (!strcmp(key, "hide_hero_icon")) g_settings.hide_hero_icon = atoi(val) != 0;
+        else if (!strcmp(key, "rearmed_art")) g_settings.rearmed_art = atoi(val) != 0;
         else if (!strcmp(key, "mirror_mode")) g_settings.mirror_mode = atoi(val) != 0;
         else if (!strcmp(key, "prompts")) g_settings.prompts = !strcmp(val, "nintendo") ? PROMPTS_NINTENDO : !strcmp(val, "xbox") ?
-                                                              PROMPTS_XBOX : !strcmp(val, "playstation") ? PROMPTS_PLAYSTATION : PROMPTS_AUTO;
+                                                              PROMPTS_XBOX : !strcmp(val, "playstation") ? PROMPTS_PLAYSTATION : !strcmp(val, "keyboard") ? PROMPTS_KEYBOARD : PROMPTS_AUTO;
         else if (!strcmp(key, "menu_confirm")) g_settings.menu_confirm = !strcmp(val, "game") ? MENU_CONFIRM_GAME
                                                                                                   : MENU_CONFIRM_CONTROLLER;
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
@@ -269,8 +274,9 @@ void settings_save(void) {
     fprintf(f, "background_input = %d\n", g_settings.bg_input);
     fprintf(f, "move_360 = %d\nblur_removal = %d\nhide_hero_icon = %d\n", g_settings.move_360, g_settings.blur_removal,
             g_settings.hide_hero_icon);
-    static const char *const prompts[] = {"auto", "nintendo", "xbox", "playstation"};
-    fprintf(f, "prompts = %s\n", prompts[g_settings.prompts & 3]);
+    fprintf(f, "rearmed_art = %d\n", g_settings.rearmed_art);
+    static const char *const prompts[] = {"auto", "nintendo", "xbox", "playstation", "keyboard"};
+    fprintf(f, "prompts = %s\n", prompts[g_settings.prompts >= 0 && g_settings.prompts <= PROMPTS_KEYBOARD ? g_settings.prompts : 0]);
     fprintf(f, "menu_confirm = %s\n", g_settings.menu_confirm == MENU_CONFIRM_CONTROLLER ? "controller" : "game");
     fprintf(f, "mirror_mode = %d\n", g_settings.mirror_mode);
     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES

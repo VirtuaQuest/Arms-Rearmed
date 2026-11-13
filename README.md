@@ -2,7 +2,7 @@
 
 <a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
 
-A static recompilation of *ARMS* (Nintendo Switch, version 5.4.0: the base game with its last update) into a native
+A static recompilation of *ARMS* (Nintendo Switch, version 5.4.0 or 5.5.1: the base game with one of those updates) into a native
 Windows x86-64 program, built on [LAS Recomp](https://github.com/peiikai/LASRecomp)'s recompiler and Switch runtime
 (by way of MUA3 Recomp and DOAX3 Recomp). The game's ARM64 code is translated to C and compiled for the PC; a Switch
 runtime takes the console's place (graphics through Vulkan, audio, input, files, services).
@@ -15,7 +15,7 @@ starts and no model shows up late. Online play, local wireless, the web manual a
 game says so and stays in its menus. Details: [docs/CHANGES.md](docs/CHANGES.md).
 
 No game files are included or ever committed, and the releases hold no game code: the game code is recompiled from
-your own copy on your own PC. You need your own legally obtained copy of the game, its 5.4.0 update and the keys from
+your own copy on your own PC. You need your own legally obtained copy of the game, its 5.4.0 or 5.5.1 update and the keys from
 your own console.
 
 ![ARMS Rearmed's icon (original art, no game assets)](docs/icon/icon.png)
@@ -23,7 +23,7 @@ your own console.
 ## Play with RecompLauncher
 
 ARMS Rearmed works with [RecompLauncher](https://recomplauncher.com): install it from the launcher, then give Easy
-Setup your ARMS XCI or NSP, the 5.4.0 update NSP and your `prod.keys`. The setup step recompiles the game for your PC
+Setup your ARMS XCI or NSP, the 5.4.0 or 5.5.1 update NSP and your `prod.keys`. The setup step recompiles the game for your PC
 (about 10 minutes; nothing else to install), then Play starts it. Video, sound and controller settings are on the
 game's page. Keep your XCI / NSP files where they are: the game reads its data from them.
 
@@ -31,7 +31,7 @@ game's page. Keep your XCI / NSP files where they are: the game reads its data f
 
 1. Download `ARMS-Rearmed-v<version>-Windows-x64.zip` from [Releases](https://github.com/VirtuaQuest/Arms-Rearmed/releases)
    and unzip it somewhere you can write to (Documents or Desktop, not Program Files).
-2. Run `armslauncher.exe`. On **GAME FILES**, choose your base game (XCI or NSP), the 5.4.0 update (NSP) and your
+2. Run `armslauncher.exe`. On **GAME FILES**, choose your base game (XCI or NSP), the 5.4.0 or 5.5.1 update (NSP) and your
    `prod.keys`, then **INSTALL** (about 10 minutes the first time: extract, recompile, build, prepare the shaders).
 3. **FIGHT!** on the PLAY page.
 
@@ -41,14 +41,15 @@ Needs Windows 10 or 11 (64-bit), a CPU with AVX2 (Intel 4th gen / AMD Ryzen or n
 ## Build from source (Windows)
 
 1. Install [MSYS2](https://www.msys2.org) to `C:\msys64`, then in its UCRT64 shell:
-   `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld make mingw-w64-ucrt-x86_64-SDL3
-   mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc`
+   `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld make mingw-w64-ucrt-x86_64-sdl3
+   mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-shaderc
+   mingw-w64-ucrt-x86_64-vulkan-memory-allocator`
    (as LAS Recomp's `tools/setup_windows.ps1`).
 2. Install [Python 3.12](https://www.python.org) (the `py` launcher).
 3. Build the launcher once, from Git Bash or the MSYS2 UCRT64 shell in this folder:
    `export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"; make launcher dlls` (`dlls` copies the MSYS2 DLLs
    next to it, so it starts from Explorer).
-4. Run `build\armslauncher.exe`. On **GAME FILES**, choose your base game (XCI or NSP), the 5.4.0 update (NSP) and
+4. Run `build\armslauncher.exe`. On **GAME FILES**, choose your base game (XCI or NSP), the 5.4.0 or 5.5.1 update (NSP) and
    your `prod.keys`, then **INSTALL**: it makes the Python environment, extracts the game's code, recompiles it and
    builds the PC version (about 10 minutes the first time). Then **FIGHT!** on the PLAY page.
 
@@ -81,9 +82,18 @@ tools/run.sh                              # or build/armsrecomp.exe extracted (l
 | Menu (controls, video, audio) | Esc or F1 | Home / Guide |
 
 Everything can be rebound in game (Esc or F1, then Controls): keys, mouse buttons and controller buttons. Any
-controller SDL 3 knows works (Xbox, PlayStation, Switch Pro, and more), with rumble. The launcher's GRAPHICS page
+controller SDL 3 knows works (Xbox, PlayStation, Switch Pro, and more), with rumble. The game's button icons follow
+what you play with: PlayStation or Xbox buttons, or key caps and the mouse for the keyboard, switching as you go
+(Controls tab, Button icons). The launcher's GRAPHICS page
 (and the in-game Video tab) set the window mode and size, the internal resolution (up to 4x, or dynamic), FSR 1
-upscaling, SMAA and the aspect ratio. ARMS runs at its own 60 fps: its fights step once a frame.
+upscaling, SMAA and the aspect ratio: on an ultrawide screen (21:9 and wider), Unlocked shows more of the arena with
+nothing stretched, while menus and the HUD keep their 16:9 layout in the middle. ARMS runs at its own 60 fps: its fights step once a frame. The frame rate
+counter (Video tab) has a Simple mode, the rate, and an Advanced one: frame and GPU times, the slowest frame, render and
+window sizes and a frame-time graph.
+
+ARMS Rearmed shows its own start screen and a REARMED tag on the logo, drawn during setup from your own game files.
+To see the game's originals instead, turn off Rearmed logo & splash art (the launcher's GRAPHICS page, or the in-game
+Video tab).
 
 ## Making a release
 

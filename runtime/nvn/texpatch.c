@@ -23,6 +23,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+
+#include <SDL3/SDL_keyboard.h>  // (SDL_GetScancodeName: ARMS's key cap icons)
+#include <SDL3/SDL_scancode.h>
 
 #include "../hle.h"
 #include "../input_bind.h"
@@ -38,11 +42,16 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../../third_party/imgui/imstb_truetype.h"
 
-enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1 };
+enum { K_BC5, K_BC3, K_ASTC4, K_RGBA8, K_BC1, K_BC4, K_BC7 };
 enum { R_A = 1, R_B, R_X, R_Y, R_L, R_R, R_ZL, R_ZR, R_PLUS, R_MINUS, R_HERO, R_SHEET, R_BOTTLE, R_BOTTLE_MODEL, R_FAIRY_MODEL,
        R_ITEM_CURSOR, R_TUNIC, R_TUNIC_RED, R_TUNIC_BLUE, R_HEART, R_POWDER_MODEL, R_DGN_MAP, R_MAP_MODEL, R_POWER_PIECE_MODEL,
-       R_SKIN };
-enum { STYLE_NINTENDO, STYLE_XBOX, STYLE_PS };
+       R_SKIN, R_ARMS_SHEET, R_BRAND };
+// ARMS's icon font glyphs beyond the buttons R_A..R_MINUS: the sticks (moved: the keyboard's movement keys) and their
+// presses (ARMS: guard is the left stick's press)
+enum { AR_LSTICK = 100, AR_RSTICK, AR_LS_PRESS, AR_RS_PRESS };
+// STYLE_KB: the keyboard / mouse bindings, drawn as key caps and a mouse (ARMS's icon font: runtime/nvn/texpatch.c
+// arms_sheet_apply)
+enum { STYLE_NINTENDO, STYLE_XBOX, STYLE_PS, STYLE_KB };
 // labels: R_A..R_MINUS = the button that role is on by default; or these
 enum { L_LS = 32, L_RS, L_DUP, L_DDOWN, L_DLEFT, L_DRIGHT, L_OTHER };
 
@@ -178,7 +187,226 @@ static void scan_sarc(const char *rel) {
     free(d);
 }
 
+// ------------------------------------------------------------------ ARMS: the button icons' font (ARMSIconFont.bffnt)
+// ARMS draws its button prompts as characters of an icon font, U+E0A0.. (the Switch's NintendoExt layout: outline
+// set E0A0.., filled set E0E0..; the game tints them - the yellow footer, the orange L / R). Its sheet is one BC4
+// mask 512x1024 (cells 43x49 in 11 columns, rows from the bottom, each stored upside down) in Font/BmpFont_<region>.szs
+// (Yaz0 > SARC > ARMSIconFont.bffnt). The game files are read in place (romfs_file_find: no extracted romfs/).
+typedef struct {
+    uint16_t cw, ch, cols;  // cell size (the font's cell + 1) and cells a row
+    int n;
+    uint16_t code[256], glyph[256];
+} ArmsFont;
+static ArmsFont g_arms_font[8];
+static int g_arms_nfonts;
+static int8_t g_arms_font_of_ref[96];  // (g_refs index -> g_arms_font index, or -1)
+
+static uint8_t *game_file(const char *rel, size_t *len) {
+    extern bool romfs_file_find(const char *rel, uint64_t *off, uint64_t *size);  // runtime/services/fs.c
+    extern ssize_t romfs_image_read(void *dst, uint64_t n, uint64_t off);
+    uint64_t off, size;
+    if (!romfs_file_find(rel, &off, &size)) return read_all(rel, len);  // (an extracted romfs/ folder)
+    if (size > (64u << 20)) return NULL;
+    uint8_t *d = malloc(size ? size : 1);
+    if (romfs_image_read(d, size, off) != (ssize_t)size) { free(d); return NULL; }
+    *len = size;
+    return d;
+}
+
+static uint8_t *yaz0_decode(const uint8_t *d, size_t len, size_t *out_len) {
+    if (len < 16 || memcmp(d, "Yaz0", 4)) return NULL;
+    size_t size = (size_t)d[4] << 24 | (size_t)d[5] << 16 | (size_t)d[6] << 8 | d[7], i = 16, n = 0;
+    if (size > (256u << 20)) return NULL;
+    uint8_t *o = malloc(size ? size : 1);
+    while (n < size && i < len) {
+        uint8_t code = d[i++];
+        for (int b = 0; b < 8 && n < size; b++) {
+            if (code & (0x80 >> b)) {
+                if (i >= len) goto bad;
+                o[n++] = d[i++];
+                continue;
+            }
+            if (i + 1 >= len) goto bad;
+            size_t b1 = d[i], b2 = d[i + 1], dist = ((b1 & 0xF) << 8 | b2) + 1, cnt = b1 >> 4;
+            i += 2;
+            if (!cnt) {
+                if (i >= len) goto bad;
+                cnt = (size_t)d[i++] + 0x12;
+            } else {
+                cnt += 2;
+            }
+            if (dist > n) goto bad;
+            for (size_t k = 0; k < cnt && n < size; k++, n++) o[n] = o[n - dist];
+        }
+    }
+    if (n < size) goto bad;
+    *out_len = size;
+    return o;
+bad:
+    free(o);
+    return NULL;
+}
+
+// A file of a (little-endian) SARC by name, or NULL
+static const uint8_t *sarc_file(const uint8_t *d, size_t len, const char *want, uint32_t *flen) {
+    if (len < 0x20 || memcmp(d, "SARC", 4) || memcmp(d + 0x14, "SFAT", 4)) return NULL;
+    uint32_t data_off = rd32(d + 0xC);
+    uint16_t n = rd16(d + 0x1A);
+    const uint8_t *ent = d + 0x20, *names = d + 0x20 + 16 * (size_t)n + 8;  // (SFNT header: 8 bytes)
+    if ((size_t)(names - d) > len) return NULL;
+    for (uint16_t i = 0; i < n; i++) {
+        uint32_t attr = rd32(ent + 16 * i + 4), s = rd32(ent + 16 * i + 8), e = rd32(ent + 16 * i + 12);
+        if (!(attr >> 24)) continue;
+        size_t at = (size_t)(names - d) + (size_t)(attr & 0xffffff) * 4;
+        if (at >= len || strnlen((const char *)d + at, len - at) == len - at) continue;
+        if (strcmp((const char *)d + at, want) || e < s || (size_t)data_off + e > len) continue;
+        *flen = e - s;
+        return d + data_off + s;
+    }
+    return NULL;
+}
+
+// An NX icon font: its single BC4 sheet (pointer into f) and its code -> glyph map. false: not that kind of font.
+static bool parse_arms_font(const uint8_t *f, uint32_t len, ArmsFont *af, const uint8_t **sheet, uint32_t *sheet_len,
+                            uint32_t *sw, uint32_t *sh) {
+    if (len < 0x60 || memcmp(f, "FFNT", 4) || f[4] != 0xFF || f[5] != 0xFE) return false;
+    const uint8_t *t = NULL;
+    for (uint32_t p = 0x14; p + 0x20 <= len && !t; p += 4) if (!memcmp(f + p, "TGLP", 4)) t = f + p;
+    if (!t) return false;
+    uint32_t tsize = rd32(t + 4), nsheets = t[10], ssize = rd32(t + 12), fmt = rd16(t + 18), data_off = rd32(t + 28);
+    af->cw = (uint16_t)(t[8] + 1), af->ch = (uint16_t)(t[9] + 1), af->cols = rd16(t + 20);
+    *sw = rd16(t + 24), *sh = rd16(t + 26);
+    if (nsheets != 1 || (fmt & 0x7fff) != 12 /* BC4 */ || !af->cols || !*sw || !*sh) return false;
+    uint32_t bytes = (*sw / 4) * (*sh / 4) * 8;  // (the texture: the rest of the section is padding)
+    if (bytes > ssize || data_off + bytes > len) return false;
+    // The texture's bytes start at the sheet offset rounded up to its block-linear block (512 bytes per GOB times the
+    // block height's 16 GOBs: 0x2000; ARMSIconFont: the field says 0x1000, the image starts at 0x2000 - checked
+    // against the texture the game uploads, every block in place)
+    uint32_t th = tegra_default_block_height_log2(*sh / 4), al = 512u << th, at = (data_off + al - 1) / al * al;
+    if (at + bytes <= data_off + ssize && at + bytes <= len) data_off = at;
+    *sheet = f + data_off, *sheet_len = bytes;
+    af->n = 0;
+    uint32_t p = (uint32_t)(t - f) + tsize;
+    for (; p + 0x18 <= len; p += 4) {
+        if (memcmp(f + p, "CMAP", 4)) continue;
+        uint32_t cb = rd32(f + p + 8), ce = rd32(f + p + 12), m = rd16(f + p + 16);
+        const uint8_t *body = f + p + 0x18;
+        if (ce < cb || ce - cb > 0x10000) continue;
+        if (m == 0 && body + 2 <= f + len) {  // direct
+            uint16_t first = rd16(body);
+            for (uint32_t c = cb; c <= ce && af->n < 256; c++) af->code[af->n] = (uint16_t)c, af->glyph[af->n++] = (uint16_t)(first + c - cb);
+        } else if (m == 1 && body + 2 * (ce - cb + 1) <= f + len) {  // table
+            for (uint32_t c = cb; c <= ce && af->n < 256; c++) {
+                uint16_t g = rd16(body + 2 * (c - cb));
+                if (g != 0xFFFF) af->code[af->n] = (uint16_t)c, af->glyph[af->n++] = g;
+            }
+        } else if (m == 2 && body + 4 <= f + len) {  // scan: pairs
+            uint16_t n = rd16(body);
+            for (uint32_t i = 0; i < n && body + 4 + 8 * (i + 1) <= f + len && af->n < 256; i++)
+                af->code[af->n] = (uint16_t)rd32(body + 4 + 8 * i), af->glyph[af->n++] = rd16(body + 8 + 8 * i);
+        }
+    }
+    return af->n > 0;
+}
+
+static void scan_arms_icons(void) {
+    static const char *const regions[] = {"US", "EU", "JP", "KR", "CN", "TW"};
+    for (int i = 0; i < (int)(sizeof g_arms_font_of_ref); i++) g_arms_font_of_ref[i] = -1;
+    for (int ri = 0; ri < (int)(sizeof regions / sizeof *regions); ri++) {
+        char rel[64];
+        snprintf(rel, sizeof rel, "Font/BmpFont_%s.szs", regions[ri]);
+        size_t zlen, len;
+        uint8_t *z = game_file(rel, &zlen);
+        if (!z) continue;
+        uint8_t *d = yaz0_decode(z, zlen, &len);
+        free(z);
+        if (!d) continue;
+        uint32_t flen, slen, sw, sh;
+        const uint8_t *f = sarc_file(d, len, "ARMSIconFont.bffnt", &flen), *sheet;
+        ArmsFont af;
+        if (f && g_arms_nfonts < (int)(sizeof g_arms_font / sizeof *g_arms_font) &&
+            parse_arms_font(f, flen, &af, &sheet, &slen, &sw, &sh)) {
+            int before = g_nrefs;
+            add_ref(R_ARMS_SHEET, K_BC4, 0, sw, sh, 1, sheet, slen, "ARMSIconFont", 4);
+            if (g_nrefs > before) {  // (a new sheet: the regions share most)
+                g_arms_font[g_arms_nfonts] = af;
+                g_arms_font_of_ref[g_nrefs - 1] = (int8_t)g_arms_nfonts++;
+            }
+        }
+        free(d);
+    }
+    if (g_arms_nfonts) LOG("[texpatch] ARMS icon font: %d sheet(s)\n", g_arms_nfonts);
+}
+
+// ------------------------------------------------------------------ ARMS Rearmed's logo & splash art (tools/branding.py)
+// <extracted>/branding/manifest.txt: "<name> <w> <h> <bc4|bc7> <orig> <rgba>" per texture - the game's texture as it holds
+// it in memory (.orig: how it's recognised on upload) and its replacement (.rgba, RGBA8 w x h), both made at setup from
+// the player's own game files. While "Rearmed logo & splash art" is on (Video tab) the replacement is encoded into the
+// texture's own format as it is uploaded; off, the game's own is uploaded (a change re-uploads: texpatch_generation).
+typedef struct {
+    char rgba[640];
+    uint8_t *px;    // (the replacement, read at its first use)
+    bool tried, splash;
+} Brand;
+static Brand g_brand[8];
+static int g_nbrand;
+static int8_t g_brand_of_ref[96];
+
+static void branding_dir(char *out, size_t n) {
+    const char *r = g_romfs_dir ? g_romfs_dir : "extracted/romfs";
+    size_t l = strlen(r);
+    if (l >= 6 && (!strcmp(r + l - 6, "/romfs") || !strcmp(r + l - 6, "\\romfs"))) snprintf(out, n, "%.*s/branding", (int)(l - 6), r);
+    else snprintf(out, n, "extracted/branding");
+}
+
+static void scan_branding(void) {
+    for (int i = 0; i < (int)sizeof g_brand_of_ref; i++) g_brand_of_ref[i] = -1;
+    char dir[600], p[900], line[600];
+    branding_dir(dir, sizeof dir);
+    snprintf(p, sizeof p, "%s/manifest.txt", dir);
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f) && g_nbrand < (int)(sizeof g_brand / sizeof *g_brand)) {
+        char name[64], kind[8], orig[160], rgba[160];
+        unsigned w, h;
+        if (line[0] == '#' || sscanf(line, "%63s %u %u %7s %159s %159s", name, &w, &h, kind, orig, rgba) != 6) continue;
+        int k = !strcmp(kind, "bc4") ? K_BC4 : !strcmp(kind, "bc7") ? K_BC7 : -1;
+        size_t len;
+        snprintf(p, sizeof p, "%s/%s", dir, orig);
+        uint8_t *d = k >= 0 ? read_file(p, &len) : NULL;
+        if (!d) continue;
+        int before = g_nrefs;
+        add_ref(R_BRAND, k, 0, w, h, 1, d, (uint32_t)len, name, 0);
+        free(d);
+        if (g_nrefs > before) {
+            Brand *b = &g_brand[g_nbrand];
+            snprintf(b->rgba, sizeof b->rgba, "%s/%s", dir, rgba);
+            b->splash = !strcmp(name, "Boot_ControllerStrap");
+            g_brand_of_ref[g_nrefs - 1] = (int8_t)g_nbrand++;
+        }
+    }
+    fclose(f);
+    if (g_nbrand) LOG("[texpatch] Rearmed logo & splash art: %d textures (%s)\n", g_nbrand, dir);
+}
+
+// "Rearmed logo & splash art" (LARECOMP_REARMED_ART=0 / 1: test override)
+bool texpatch_brand_on(void) {
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("LARECOMP_REARMED_ART"); env = e ? atoi(e) != 0 : -1; }
+    return env >= 0 ? env != 0 : g_settings.rearmed_art;
+}
+
+// Known texture `id` is ARMS's button-icon font sheet (exec.c: its glyphs are text too)
+bool texpatch_is_icon_sheet(int id) { return id >= 0 && id < g_nrefs && g_refs[id].role == R_ARMS_SHEET; }
+
+// Known texture `id` is the Rearmed boot splash (runtime/nvn/vulkan/exec.c hides the game's own text over it)
+bool texpatch_is_brand_splash(int id) {
+    return id >= 0 && id < g_nrefs && g_refs[id].role == R_BRAND && g_brand_of_ref[id] >= 0 && g_brand[g_brand_of_ref[id]].splash;
+}
+
 static void load_refs(void) {
+    scan_branding();
+    scan_arms_icons();
     scan_sarc("region_common/ui/Game.arc");
     scan_sarc("region_common/ui/StartUp.arc");
     scan_sarc("regionUS/common/ui/GameRegionCommon.arc");
@@ -299,7 +527,7 @@ static int prompt_style(void) {
     if (env == -2) {
         const char *e = getenv("LARECOMP_PROMPTS");
         env = !e ? -1 : !strcmp(e, "xbox") ? PROMPTS_XBOX : !strcmp(e, "playstation") ? PROMPTS_PLAYSTATION :
-              !strcmp(e, "nintendo") ? PROMPTS_NINTENDO : PROMPTS_AUTO;
+              !strcmp(e, "nintendo") ? PROMPTS_NINTENDO : !strcmp(e, "keyboard") ? PROMPTS_KEYBOARD : PROMPTS_AUTO;
         until = getenv("LARECOMP_PROMPTS_UNTIL") ? atol(getenv("LARECOMP_PROMPTS_UNTIL")) : -1;
     }
     extern uint64_t renderer_present_count(void);
@@ -307,7 +535,12 @@ static int prompt_style(void) {
     if (p == PROMPTS_XBOX) return STYLE_XBOX;
     if (p == PROMPTS_PLAYSTATION) return STYLE_PS;
     if (p == PROMPTS_NINTENDO) return STYLE_NINTENDO;
+    if (p == PROMPTS_KEYBOARD) return STYLE_KB;
+    // Auto: the keyboard and mouse while they were used last (runtime/hle/input.c), else the controller SDL reports.
+    // Only ARMS's icon font has keyboard icons (no other known texture is touched in that style).
+    extern int input_last_kbm(void);
     extern int input_pad_family(void);  // runtime/hle/input.c: the controller SDL reports
+    if (g_arms_nfonts && input_last_kbm()) return STYLE_KB;
     int f = input_pad_family();
     return f == 1 ? STYLE_XBOX : f == 2 ? STYLE_PS : STYLE_NINTENDO;
 }
@@ -358,10 +591,18 @@ static void cosmetics_test(void);
 static uint32_t skin_rgb(void);
 static uint32_t tunic_rgb(void);
 
+static uint32_t kb_labels_hash(void) {  // (the keyboard bindings: ARMS's key cap icons)
+    uint32_t h = 0;
+    for (int i = 0; i < BIND_KEY_COUNT; i++) h = h * 31 + (uint32_t)(uint16_t)g_bind_key[i];
+    return h;
+}
+
 uint32_t texpatch_generation(void) {  // (a rebind re-uploads the glyphs, like a style change; so does a tunic colour)
     cosmetics_test();
-    return (1 + (uint32_t)prompt_style() + (hide_hero() ? 4 : 0) + (labels_hash() << 3)) ^ tunic_rgb() * 0x9E3779B1u ^
-           skin_rgb() * 0x85EBCA6Bu;
+    int style = prompt_style();
+    return (1 + (uint32_t)style + (hide_hero() ? 8 : 0) + (labels_hash() << 4)) ^ tunic_rgb() * 0x9E3779B1u ^
+           skin_rgb() * 0x85EBCA6Bu ^ (style == STYLE_KB ? kb_labels_hash() * 0xC2B2AE35u : 0) ^
+           (texpatch_brand_on() ? 0x5BD1E995u : 0);
 }
 
 // ------------------------------------------------------------------ block codecs (BC4/BC5, BC1/BC3, ASTC 4x4)
@@ -482,6 +723,18 @@ static void decode_image(const Ref *r, const uint8_t *src, uint32_t row, uint8_t
         free(blocks);
         return;
     }
+    if (r->kind == K_BC4) {  // (a mask: every channel the mask, so the shape is in alpha as for the others)
+        for (uint32_t by = 0; by < bh; by++)
+            for (uint32_t bx = 0; bx < bw; bx++) {
+                uint8_t a[16];
+                bc4_decode(src + by * row + bx * 8, a);
+                for (int i = 0; i < 16; i++) {
+                    uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+                    if (x < W && y < H) memset(img + (y * W + x) * 4, a[i], 4);
+                }
+            }
+        return;
+    }
     for (uint32_t by = 0; by < bh; by++)
         for (uint32_t bx = 0; bx < bw; bx++) {
             const uint8_t *b = src + by * row + bx * 16;
@@ -503,6 +756,21 @@ static void decode_image(const Ref *r, const uint8_t *src, uint32_t row, uint8_t
 static void encode_image(const Ref *r, const uint8_t *img, const uint8_t *dirty, uint8_t *dst, uint32_t row) {
     uint32_t W = r->w, H = r->h, bw = (W + 3) / 4, bh = (H + 3) / 4;
     if (r->kind == K_RGBA8) { for (uint32_t y = 0; y < H; y++) memcpy(dst + y * row, img + y * W * 4, W * 4); return; }
+    if (r->kind == K_BC4) {
+        for (uint32_t by = 0; by < bh; by++)
+            for (uint32_t bx = 0; bx < bw; bx++) {
+                if (!dirty[by * bw + bx]) continue;
+                uint8_t a[16];
+                for (int i = 0; i < 16; i++) {
+                    uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+                    if (x >= W) x = W - 1;
+                    if (y >= H) y = H - 1;
+                    a[i] = img[(y * W + x) * 4 + 3];
+                }
+                bc4_encode(a, dst + by * row + bx * 8);
+            }
+        return;
+    }
     for (uint32_t by = 0; by < bh; by++)
         for (uint32_t bx = 0; bx < bw; bx++) {
             if (!dirty[by * bw + bx]) continue;
@@ -852,6 +1120,338 @@ done:
     free(px); free(S); free(I); free(L); free(stack); free(cv); free(out);
 }
 
+// ------------------------------------------------------------------ ARMS: key caps, the mouse, stick presses
+// Glyphs redrawn whole (not relabelled): a key cap (rounded square) or a mouse in the glyph's place, or a stick's ring
+// with "L3" / "R3". The icon font has two looks: filled (the shape solid, the label cut out of it: the game's tint
+// fills the shape, the background shows through the label) and outline (the shape's edge and the label drawn).
+enum { ICON_KEY, ICON_MOUSE, ICON_RING, ICON_KEYS4 };  // (KEYS4: a stick's four keys as an arrow-key cluster)
+enum { SYM_NONE, SYM_SHIFT, SYM_SPACE, SYM_ENTER, SYM_BACKSPACE, SYM_UP, SYM_DOWN, SYM_LEFT, SYM_RIGHT };
+typedef struct {
+    int icon;          // ICON_*
+    int mouse;         // ICON_MOUSE: 1 left, 2 middle, 3 right
+    int sym;           // SYM_*: drawn instead of text
+    char text[8];
+    int plabel, pstyle;  // else a controller label (draw_label's R_* / L_* in that style): Xbox / PlayStation rings
+} CellIcon;
+
+// Text of any length on the canvas: drawn at the height that keeps it inside the canvas's width
+static bool draw_text_fit(float *cv, const char *text) {
+    if (!g_font_ok || !*text) return false;
+    float sc = stbtt_ScaleForPixelHeight(&g_font, 200), wsum = 0;
+    for (const char *p = text; *p; p++) {
+        int adv, lsb;
+        stbtt_GetCodepointHMetrics(&g_font, *p, &adv, &lsb);
+        wsum += adv * sc + (p[1] ? stbtt_GetCodepointKernAdvance(&g_font, p[0], p[1]) * sc : 0);
+    }
+    float px = wsum > CV - 24 ? 200 * (CV - 24) / wsum : 200;
+    sc = stbtt_ScaleForPixelHeight(&g_font, px);
+    float x = 8;
+    for (const char *p = text; *p; p++) {
+        int adv, lsb, x0, y0, x1, y1;
+        stbtt_GetCodepointHMetrics(&g_font, *p, &adv, &lsb);
+        stbtt_GetCodepointBitmapBox(&g_font, *p, sc, sc, &x0, &y0, &x1, &y1);
+        int w = x1 - x0, h = y1 - y0, ox = (int)x + x0, oy = (int)(128 + px / 2) + y0;
+        if (w > 0 && h > 0) {
+            unsigned char *bm = malloc((size_t)w * h);
+            stbtt_MakeCodepointBitmap(&g_font, bm, w, h, w, sc, sc, *p);
+            for (int yy = 0; yy < h; yy++)
+                for (int xx = 0; xx < w; xx++) {
+                    int X = ox + xx, Y = oy + yy;
+                    if (X >= 0 && X < CV && Y >= 0 && Y < CV) { float a = bm[yy * w + xx] / 255.0f; if (a > cv[Y * CV + X]) cv[Y * CV + X] = a; }
+                }
+            free(bm);
+        }
+        x += adv * sc;
+        if (p[1]) x += stbtt_GetCodepointKernAdvance(&g_font, p[0], p[1]) * sc;
+    }
+    return true;
+}
+
+static void fill_rrect(float *cv, float x0, float y0, float x1, float y1, float rad, bool cut) {  // (cut: clears)
+    for (int y = 0; y < CV; y++)
+        for (int x = 0; x < CV; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
+            float qx = fmaxf(fmaxf(x0 + rad - px, px - (x1 - rad)), 0), qy = fmaxf(fmaxf(y0 + rad - py, py - (y1 - rad)), 0);
+            float a = sat(rad - hypotf(qx, qy) + 0.5f);
+            if (px < x0 - 1 || px > x1 + 1 || py < y0 - 1 || py > y1 + 1) a = 0;
+            float *c = &cv[y * CV + x];
+            if (cut) *c = fminf(*c, 1 - a);
+            else if (a > *c) *c = a;
+        }
+}
+
+static void stroke_rrect(float *cv, float x0, float y0, float x1, float y1, float rad, float th) {
+    static float tmp[CV * CV];
+    memset(tmp, 0, sizeof tmp);
+    fill_rrect(tmp, x0, y0, x1, y1, rad, false);
+    fill_rrect(tmp, x0 + th, y0 + th, x1 - th, y1 - th, fmaxf(rad - th, 1), true);
+    for (int i = 0; i < CV * CV; i++) if (tmp[i] > cv[i]) cv[i] = tmp[i];
+}
+
+// A key's label: a symbol (drawn with strokes) or text, into `cv` (cleared first). false: nothing drawn.
+static bool draw_key_label(const CellIcon *ic, float *cv) {
+    memset(cv, 0, sizeof(float) * CV * CV);
+    if (ic->plabel) {
+        bool symbol;
+        return draw_label(ic->plabel, ic->pstyle, cv, &symbol);
+    }
+    switch (ic->sym) {
+    case SYM_SHIFT: {  // a hollow arrow up
+        Seg s[7] = {{128, 30, 226, 132}, {226, 132, 172, 132}, {172, 132, 172, 226}, {172, 226, 84, 226},
+                    {84, 226, 84, 132}, {84, 132, 30, 132}, {30, 132, 128, 30}};
+        draw_segs(cv, s, 7, 13);
+        return true;
+    }
+    case SYM_SPACE: { Seg s[3] = {{30, 110, 30, 190}, {30, 190, 226, 190}, {226, 190, 226, 110}}; draw_segs(cv, s, 3, 16); return true; }
+    case SYM_ENTER: {
+        Seg s[4] = {{206, 40, 206, 170}, {206, 170, 60, 170}, {60, 170, 112, 118}, {60, 170, 112, 222}};
+        draw_segs(cv, s, 4, 15);
+        return true;
+    }
+    case SYM_BACKSPACE: {
+        Seg s[3] = {{216, 128, 46, 128}, {46, 128, 104, 70}, {46, 128, 104, 186}};
+        draw_segs(cv, s, 3, 16);
+        return true;
+    }
+    case SYM_UP: case SYM_DOWN: case SYM_LEFT: case SYM_RIGHT: {
+        bool symbol;
+        static const int roles[] = {L_DUP, L_DDOWN, L_DLEFT, L_DRIGHT};
+        return draw_label(roles[ic->sym - SYM_UP], STYLE_NINTENDO, cv, &symbol);
+    }
+    default: return ic->text[0] && draw_text_fit(cv, ic->text);
+    }
+}
+
+// Coverage bounds of a canvas (false: empty)
+static bool cv_bounds(const float *cv, int *x0, int *y0, int *x1, int *y1) {
+    *x0 = *y0 = CV, *x1 = *y1 = -1;
+    for (int i = 0; i < CV * CV; i++)
+        if (cv[i] > 0.02f) {
+            int x = i % CV, y = i / CV;
+            if (x < *x0) *x0 = x;
+            if (x > *x1) *x1 = x;
+            if (y < *y0) *y0 = y;
+            if (y > *y1) *y1 = y;
+        }
+    return *x1 >= 0;
+}
+
+// `src`'s drawing fitted (aspect kept, centred) into the box bx0..bx1 / by0..by1 of `dst` (max with what's there)
+static void cv_fit(float *dst, const float *src, float bx0, float by0, float bx1, float by1) {
+    int sx0, sy0, sx1, sy1;
+    if (!cv_bounds(src, &sx0, &sy0, &sx1, &sy1)) return;
+    float sw = (float)(sx1 - sx0 + 1), sh = (float)(sy1 - sy0 + 1), k = fminf((bx1 - bx0) / sw, (by1 - by0) / sh);
+    float ox = (bx0 + bx1) / 2 - sw * k / 2, oy = (by0 + by1) / 2 - sh * k / 2;
+    for (int y = 0; y < CV; y++)
+        for (int x = 0; x < CV; x++) {
+            float u = sx0 + (x + 0.5f - ox) / k, v = sy0 + (y + 0.5f - oy) / k;
+            int iu = (int)floorf(u), iv = (int)floorf(v);
+            if (iu < sx0 || iv < sy0 || iu > sx1 || iv > sy1) continue;
+            float a = src[iv * CV + iu];
+            if (a > dst[y * CV + x]) dst[y * CV + x] = a;
+        }
+}
+
+// The whole icon on the canvas (coverage 0..1), the filled or the outline look
+static void draw_cell_icon(const CellIcon *ic, bool filled, float *cv) {
+    static float shape[CV * CV], label[CV * CV], fitted[CV * CV];
+    memset(shape, 0, sizeof shape);
+    memset(fitted, 0, sizeof fitted);
+    float lx0 = 62, ly0 = 62, lx1 = 194, ly1 = 194;  // (the label's box)
+    if (ic->icon == ICON_MOUSE) {
+        const float x0 = 52, y0 = 8, x1 = 204, y1 = 248, rad = 76, split = 112;
+        if (filled) fill_rrect(shape, x0, y0, x1, y1, rad, false);
+        else stroke_rrect(shape, x0, y0, x1, y1, rad, 20);
+        static float btn[CV * CV];  // the button: the body's part above `split`, left / right of the middle
+        memset(btn, 0, sizeof btn);
+        fill_rrect(btn, x0, y0, x1, y1, rad, false);
+        for (int y = 0; y < CV; y++)
+            for (int x = 0; x < CV; x++) {
+                bool in = y < split - 6 && (ic->mouse == 1 ? x < 122 : ic->mouse == 3 ? x > 134 : x > 108 && x < 148 && y > 36 && y < 96);
+                if (!in) btn[y * CV + x] = 0;
+            }
+        Seg s[2] = {{x0 + 4, split, x1 - 4, split}, {128, y0 + 4, 128, split}};
+        static float lines[CV * CV];
+        memset(lines, 0, sizeof lines);
+        if (ic->mouse != 2) draw_segs(lines, s, 2, 6);
+        else draw_segs(lines, s, 1, 6);
+        for (int i = 0; i < CV * CV; i++)
+            cv[i] = filled ? fminf(shape[i], 1 - fmaxf(btn[i], lines[i])) : fmaxf(shape[i], fmaxf(btn[i], lines[i]));
+        return;
+    }
+    if (ic->icon == ICON_KEYS4) {  // four small caps: one over three (text: up, left, down, right)
+        const float k = 76, gap = 10, ax = (CV - (3 * k + 2 * gap)) / 2, ay = (CV - (2 * k + gap)) / 2, rad = 18;
+        const float cx[4] = {ax + k + gap, ax, ax + k + gap, ax + 2 * (k + gap)}, cy[4] = {ay, ay + k + gap, ay + k + gap, ay + k + gap};
+        for (int i = 0; i < 4; i++) {
+            if (filled) fill_rrect(shape, cx[i], cy[i], cx[i] + k, cy[i] + k, rad, false);
+            else stroke_rrect(shape, cx[i], cy[i], cx[i] + k, cy[i] + k, rad, 10);
+            char ch[2] = {ic->text[i], 0};
+            memset(label, 0, sizeof label);
+            if (ch[0] && draw_text_fit(label, ch)) cv_fit(fitted, label, cx[i] + 18, cy[i] + 15, cx[i] + k - 18, cy[i] + k - 15);
+        }
+        for (int i = 0; i < CV * CV; i++) cv[i] = filled ? fminf(shape[i], 1 - fitted[i]) : fmaxf(shape[i], fitted[i]);
+        return;
+    }
+    if (ic->icon == ICON_RING) {  // a stick: its ring
+        if (filled) { for (int y = 0; y < CV; y++) for (int x = 0; x < CV; x++) shape[y * CV + x] = sat(118 - hypotf(x + 0.5f - 128, y + 0.5f - 128) + 0.5f); }
+        else draw_ring(shape, 128, 128, 108, 20);
+        lx0 = 64, ly0 = 76, lx1 = 192, ly1 = 180;
+        if (ic->plabel) lx0 = ly0 = 70, lx1 = ly1 = 186;  // (a button's symbol: square)
+    } else {  // a key cap
+        if (filled) fill_rrect(shape, 10, 10, 246, 246, 46, false);
+        else stroke_rrect(shape, 10, 10, 246, 246, 46, 20);
+        size_t n = strlen(ic->text);
+        if (!ic->sym && n >= 3) lx0 = 34, lx1 = 222;  // (longer words: the cap's width)
+        if (!ic->sym && n == 1) ly0 = 52, ly1 = 204;
+    }
+    if (draw_key_label(ic, label)) cv_fit(fitted, label, lx0, ly0, lx1, ly1);
+    for (int i = 0; i < CV * CV; i++) cv[i] = filled ? fminf(shape[i], 1 - fitted[i]) : fmaxf(shape[i], fitted[i]);
+}
+
+// Replace one glyph cell (x0,y0 w x h in the RGBA image, stored upside down when `flip`) by `ic`, sized and placed as
+// the glyph's own shape was (its bounds: a square around them)
+static void redraw_cell(uint8_t *img, int W, int x0, int y0, int w, int h, bool flip, const CellIcon *ic, bool filled,
+                        uint8_t *dirty, int bw) {
+    int gx0 = w, gy0 = h, gx1 = -1, gy1 = -1;  // the glyph's bounds, upright
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int sy = flip ? h - 1 - y : y;
+            if (img[((y0 + sy) * W + x0 + x) * 4 + 3] > 127) {
+                if (x < gx0) gx0 = x;
+                if (x > gx1) gx1 = x;
+                if (y < gy0) gy0 = y;
+                if (y > gy1) gy1 = y;
+            }
+        }
+    if (gx1 < 0) return;
+    static float cv[CV * CV];
+    draw_cell_icon(ic, filled, cv);
+    float side = (float)((gx1 - gx0 > gy1 - gy0 ? gx1 - gx0 : gy1 - gy0) + 1);
+    float cx = (gx0 + gx1 + 1) / 2.0f, cy = (gy0 + gy1 + 1) / 2.0f, bx = cx - side / 2, by = cy - side / 2;
+    float k = CV / side;  // canvas pixels per glyph pixel
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            float a = 0;
+            if (x >= bx - 1 && x <= bx + side && y >= by - 1 && y <= by + side)
+                for (int sy = 0; sy < 4; sy++)
+                    for (int sx = 0; sx < 4; sx++) {
+                        int u = (int)((x + (sx + 0.5f) / 4 - bx) * k), v = (int)((y + (sy + 0.5f) / 4 - by) * k);
+                        if (u >= 0 && v >= 0 && u < CV && v < CV) a += cv[v * CV + u];
+                    }
+            uint8_t val = (uint8_t)lroundf(sat(a / 16) * 255);
+            int sy = flip ? h - 1 - y : y;
+            uint8_t *p = img + ((y0 + sy) * W + x0 + x) * 4;
+            if (p[3] != val || p[0] != val) {
+                memset(p, val, 4);
+                dirty[((y0 + sy) / 4) * bw + (x0 + x) / 4] = 1;
+            }
+        }
+}
+
+// The key cap / mouse for a keyboard binding (BIND_* code: a scancode or BIND_MOUSE_BASE + button). false: unbound.
+static bool kb_icon_of(int code, CellIcon *ic) {
+    memset(ic, 0, sizeof *ic);
+    if (code <= 0) return false;
+    if (bind_is_mouse(code)) {
+        int b = code - BIND_MOUSE_BASE;  // SDL_BUTTON_LEFT 1, MIDDLE 2, RIGHT 3, X1 4, X2 5
+        if (b <= 3) { ic->icon = ICON_MOUSE; ic->mouse = b; return true; }
+        snprintf(ic->text, sizeof ic->text, "M%d", b);
+        return true;
+    }
+    switch (code) {
+    case SDL_SCANCODE_SPACE: ic->sym = SYM_SPACE; return true;
+    case SDL_SCANCODE_LSHIFT: case SDL_SCANCODE_RSHIFT: ic->sym = SYM_SHIFT; return true;
+    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: ic->sym = SYM_ENTER; return true;
+    case SDL_SCANCODE_BACKSPACE: ic->sym = SYM_BACKSPACE; return true;
+    case SDL_SCANCODE_UP: ic->sym = SYM_UP; return true;
+    case SDL_SCANCODE_DOWN: ic->sym = SYM_DOWN; return true;
+    case SDL_SCANCODE_LEFT: ic->sym = SYM_LEFT; return true;
+    case SDL_SCANCODE_RIGHT: ic->sym = SYM_RIGHT; return true;
+    case SDL_SCANCODE_LCTRL: case SDL_SCANCODE_RCTRL: strcpy(ic->text, "Ctrl"); return true;
+    case SDL_SCANCODE_LALT: case SDL_SCANCODE_RALT: strcpy(ic->text, "Alt"); return true;
+    case SDL_SCANCODE_TAB: strcpy(ic->text, "Tab"); return true;
+    case SDL_SCANCODE_ESCAPE: strcpy(ic->text, "Esc"); return true;
+    case SDL_SCANCODE_CAPSLOCK: strcpy(ic->text, "Caps"); return true;
+    default: break;
+    }
+    const char *name = SDL_GetScancodeName((SDL_Scancode)code);
+    if (!name || !*name) return false;
+    if (!strncmp(name, "Keypad ", 7)) name += 7;  // ("Keypad 8": the digit)
+    snprintf(ic->text, sizeof ic->text, "%.4s", name);
+    return true;
+}
+
+// A stick's movement keys, when they're four single characters, as the four keys laid out like arrow keys (up over
+// left, down, right): W over A S D, 8 over 4 5 6 (the numpad - a cap reading "8456" said nothing); text = up, left,
+// down, right
+static bool kb_stick_icon(int up, CellIcon *ic) {
+    memset(ic, 0, sizeof *ic);
+    static const int order[4] = {0, 2, 1, 3};  // BIND_*_UP, _DOWN, _LEFT, _RIGHT -> up, left, down, right
+    char s[8] = "";
+    for (int i = 0; i < 4; i++) {
+        int code = g_bind_key[up + order[i]];
+        const char *n = code > 0 && !bind_is_mouse(code) ? SDL_GetScancodeName((SDL_Scancode)code) : NULL;
+        if (n && !strncmp(n, "Keypad ", 7)) n += 7;
+        if (!n || strlen(n) != 1) return kb_icon_of(g_bind_key[up], ic);  // (else: the up key's own cap)
+        s[i] = n[0], s[i + 1] = 0;
+    }
+    strcpy(ic->text, s);
+    ic->icon = ICON_KEYS4;
+    return true;
+}
+
+static const struct { uint16_t code; uint8_t role, filled; } k_arms_codes[] = {
+    {0xE0A0, R_A, 0}, {0xE0A1, R_B, 0}, {0xE0A2, R_X, 0}, {0xE0A3, R_Y, 0}, {0xE0A4, R_L, 0}, {0xE0A5, R_R, 0},
+    {0xE0A6, R_ZL, 0}, {0xE0A7, R_ZR, 0}, {0xE0B3, R_PLUS, 0}, {0xE0B4, R_MINUS, 0},
+    {0xE0C1, AR_LSTICK, 0}, {0xE0C2, AR_RSTICK, 0}, {0xE0C4, AR_LS_PRESS, 0}, {0xE0C5, AR_RS_PRESS, 0},
+    {0xE0E0, R_A, 1}, {0xE0E1, R_B, 1}, {0xE0E2, R_X, 1}, {0xE0E3, R_Y, 1}, {0xE0E4, R_L, 1}, {0xE0E5, R_R, 1},
+    {0xE0E6, R_ZL, 1}, {0xE0E7, R_ZR, 1}, {0xE0EF, R_PLUS, 1}, {0xE0F0, R_MINUS, 1},
+    {0xE101, AR_LSTICK, 1}, {0xE102, AR_RSTICK, 1}, {0xE104, AR_LS_PRESS, 1}, {0xE105, AR_RS_PRESS, 1},
+};
+
+static void arms_sheet_apply(int id, uint8_t *img, int W, int H, int style, uint8_t *dirty, int bw) {
+    int fi = id >= 0 && id < (int)sizeof g_arms_font_of_ref ? g_arms_font_of_ref[id] : -1;
+    if (getenv("LARECOMP_LOG_ICONS")) LOG("[icons] icon sheet (ref %d, font %d): style %d\n", id, fi, style);
+    if (fi < 0) return;
+    const ArmsFont *af = &g_arms_font[fi];
+    static const int8_t slot[] = {[R_A] = BIND_A, [R_B] = BIND_B, [R_X] = BIND_X, [R_Y] = BIND_Y, [R_L] = BIND_L,
+                                  [R_R] = BIND_R, [R_ZL] = BIND_ZL, [R_ZR] = BIND_ZR, [R_PLUS] = BIND_PLUS,
+                                  [R_MINUS] = BIND_MINUS};
+    for (int i = 0; i < (int)(sizeof k_arms_codes / sizeof *k_arms_codes); i++) {
+        int g = -1;
+        for (int k = 0; k < af->n && g < 0; k++) if (af->code[k] == k_arms_codes[i].code) g = af->glyph[k];
+        if (g < 0) continue;
+        int x0 = (g % af->cols) * af->cw, y0 = H - (g / af->cols + 1) * af->ch, role = k_arms_codes[i].role;
+        bool filled = k_arms_codes[i].filled;
+        if (y0 < 0 || x0 + af->cw > W) continue;
+        CellIcon ic;
+        if (style == STYLE_KB) {
+            bool ok = role == AR_LSTICK ? kb_stick_icon(BIND_LS_UP, &ic) : role == AR_RSTICK ? kb_stick_icon(BIND_RS_UP, &ic)
+                    : role == AR_LS_PRESS ? kb_icon_of(g_bind_key[BIND_LSTICK], &ic)
+                    : role == AR_RS_PRESS ? kb_icon_of(g_bind_key[BIND_RSTICK], &ic) : kb_icon_of(g_bind_key[slot[role]], &ic);
+            if (getenv("LARECOMP_LOG_ICONS"))
+                LOG("[icons] U+%04X glyph %d cell (%d,%d) %s: icon %d mouse %d sym %d text \"%s\"\n", k_arms_codes[i].code, g,
+                    x0, y0, filled ? "filled" : "outline", ic.icon, ic.mouse, ic.sym, ic.text);
+            if (ok) redraw_cell(img, W, x0, y0, af->cw, af->ch, true, &ic, filled, dirty, bw);
+        } else if (role == AR_LS_PRESS || role == AR_RS_PRESS) {  // L3 / R3 (Xbox: LS / RS) on the stick's ring
+            if (style == STYLE_NINTENDO) continue;
+            memset(&ic, 0, sizeof ic);
+            ic.icon = ICON_RING;
+            strcpy(ic.text, style == STYLE_PS ? (role == AR_LS_PRESS ? "L3" : "R3") : (role == AR_LS_PRESS ? "LS" : "RS"));
+            redraw_cell(img, W, x0, y0, af->cw, af->ch, true, &ic, filled, dirty, bw);
+        } else if (role <= R_MINUS && restyled(role, style)) {
+            bool round = role <= R_Y || role == R_PLUS || role == R_MINUS;
+            if (round && !filled) {  // (outline rings: relabelling thinned the ring where it met the old letter)
+                memset(&ic, 0, sizeof ic);
+                ic.icon = ICON_RING, ic.plabel = prompt_label(role), ic.pstyle = style;
+                redraw_cell(img, W, x0, y0, af->cw, af->ch, true, &ic, false, dirty, bw);
+            } else {
+                relabel(img, W, x0, y0, af->cw, af->ch, 3, true, role, style, dirty, bw);
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------ cosmetics (Cosmetics tab): tunic and heart colours
 // The colour rows share one palette (runtime/cosmetic_colour.h): the chosen colour is a target for the thing's typical
 // colour, reached by a hue / saturation / value change that keeps the shading.
@@ -1130,9 +1730,108 @@ static void skin_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_
 // = ZL, 'l' 13 / 'r' 15 = L / R (second style), 'z' 17 = ZR); 4 columns of 64x64 cells, rows from the bottom.
 static const int8_t k_sheet_roles[18] = {R_PLUS, R_MINUS, R_A, R_B, 0, 0, R_L, 0, R_R, 0, R_X, R_Y, R_ZL, R_L, 0, R_R, 0, R_ZR};
 
+// BC7 mode 6 (one subset, RGBA endpoints of 7 bits + a p-bit each, 4-bit indices): a block's two endpoints from its
+// colours' range, each channel's ends ordered as it varies with the channel that varies most; flat art (the Rearmed
+// splash, the logo circle) encodes cleanly.
+static void bc7_encode6(const uint8_t px[16][4], uint8_t *out) {
+    static const int wt[16] = {0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
+    int mn[4], mx[4], ref = 0;
+    float mean[4] = {0};
+    for (int c = 0; c < 4; c++) {
+        mn[c] = 255, mx[c] = 0;
+        for (int i = 0; i < 16; i++) {
+            if (px[i][c] < mn[c]) mn[c] = px[i][c];
+            if (px[i][c] > mx[c]) mx[c] = px[i][c];
+            mean[c] += px[i][c] / 16.0f;
+        }
+        if (mx[c] - mn[c] > mx[ref] - mn[ref]) ref = c;
+    }
+    int e[2][4];
+    for (int c = 0; c < 4; c++) {
+        float cov = 0;
+        for (int i = 0; i < 16; i++) cov += (px[i][c] - mean[c]) * (px[i][ref] - mean[ref]);
+        e[0][c] = cov < 0 ? mx[c] : mn[c];
+        e[1][c] = cov < 0 ? mn[c] : mx[c];
+    }
+    int q[2][4], p[2], ex[2][4];  // 7-bit endpoints, p-bits, their 8-bit values
+    for (int k = 0; k < 2; k++) {
+        int best = 1 << 30;
+        for (int pb = 0; pb < 2; pb++) {
+            int err = 0, qq[4];
+            for (int c = 0; c < 4; c++) {
+                int v = (e[k][c] - pb + 1) >> 1;
+                qq[c] = v < 0 ? 0 : v > 127 ? 127 : v;
+                err += abs(((qq[c] << 1) | pb) - e[k][c]);
+            }
+            if (err < best) { best = err; p[k] = pb; memcpy(q[k], qq, sizeof qq); }
+        }
+        for (int c = 0; c < 4; c++) ex[k][c] = (q[k][c] << 1) | p[k];
+    }
+    int pal[16][4], idx[16];
+    for (int j = 0; j < 16; j++)
+        for (int c = 0; c < 4; c++) pal[j][c] = ((64 - wt[j]) * ex[0][c] + wt[j] * ex[1][c] + 32) >> 6;
+    for (int i = 0; i < 16; i++) {
+        int best = 1 << 30;
+        for (int j = 0; j < 16; j++) {
+            int d = 0;
+            for (int c = 0; c < 4; c++) d += (pal[j][c] - px[i][c]) * (pal[j][c] - px[i][c]);
+            if (d < best) { best = d; idx[i] = j; }
+        }
+    }
+    if (idx[0] & 8) {  // (the anchor index keeps only 3 bits: swap the endpoints so its top bit is 0)
+        for (int c = 0; c < 4; c++) { int t = q[0][c]; q[0][c] = q[1][c]; q[1][c] = t; }
+        int t = p[0]; p[0] = p[1]; p[1] = t;
+        for (int i = 0; i < 16; i++) idx[i] = 15 - idx[i];
+    }
+    memset(out, 0, 16);
+    put_bits(out, 0, 7, 0x40);  // mode 6
+    for (int c = 0; c < 4; c++) { put_bits(out, 7 + c * 14, 7, (uint32_t)q[0][c]); put_bits(out, 14 + c * 14, 7, (uint32_t)q[1][c]); }
+    put_bits(out, 63, 1, (uint32_t)p[0]);
+    put_bits(out, 64, 1, (uint32_t)p[1]);
+    put_bits(out, 65, 3, (uint32_t)idx[0]);
+    for (int i = 1; i < 16; i++) put_bits(out, 68 + (i - 1) * 4, 4, (uint32_t)idx[i]);
+}
+
+// The Rearmed replacement of known texture `id` (R_BRAND) into its level 0, in its own format
+static void brand_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row) {
+    const Ref *r = &g_refs[id];
+    int bi = g_brand_of_ref[id];
+    if (lv || bi < 0 || r->w != w || r->h != h || !texpatch_brand_on()) return;
+    Brand *b = &g_brand[bi];
+    if (!b->tried) {
+        b->tried = true;
+        size_t len;
+        b->px = read_file(b->rgba, &len);
+        if (b->px && len != (size_t)w * h * 4) { free(b->px); b->px = NULL; }
+        if (!b->px) LOG("[texpatch] Rearmed art: %s missing or the wrong size (set the game up again)\n", b->rgba);
+    }
+    if (!b->px) return;
+    uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+    for (uint32_t by = 0; by < bh; by++)
+        for (uint32_t bx = 0; bx < bw; bx++) {
+            uint8_t px[16][4];
+            for (int i = 0; i < 16; i++) {
+                uint32_t x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+                if (x >= w) x = w - 1;
+                if (y >= h) y = h - 1;
+                memcpy(px[i], b->px + ((size_t)y * w + x) * 4, 4);
+            }
+            if (r->kind == K_BC4) {
+                uint8_t v[16];
+                for (int i = 0; i < 16; i++) v[i] = px[i][0];
+                bc4_encode(v, blocks + by * row + bx * 8);
+            } else {
+                bc7_encode6(px, blocks + by * row + bx * 16);
+            }
+        }
+    static int nlog;
+    if (nlog++ < 8) LOG("[texpatch] Rearmed art: %s\n", r->name);
+}
+
 void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h, uint32_t row) {
     if (id < 0 || id >= g_nrefs) return;
     const Ref *r = &g_refs[id];
+    if (r->role == R_BRAND) { brand_apply(id, lv, blocks, w, h, row); return; }
     if (r->role == R_TUNIC || r->role == R_TUNIC_RED || r->role == R_TUNIC_BLUE) {
         size_t n = (size_t)((h + 3) / 4 - 1) * row + (w + 3) / 4 * 8;  // (the level's blocks)
         uint8_t *orig = tunic_rgb() && skin_rgb() && row >= (w + 3) / 4 * 8 ? malloc(n) : NULL;
@@ -1163,7 +1862,9 @@ void texpatch_apply(int id, uint32_t lv, uint8_t *blocks, uint32_t w, uint32_t h
     uint8_t *img = malloc((size_t)w * h * 4), *dirty = calloc((size_t)bw * ((h + 3) / 4), 1);
     decode_image(r, blocks, row, img);
     int ach = r->kind == K_BC5 ? 1 : 3;
-    if (r->role == R_SHEET) {
+    if (r->role == R_ARMS_SHEET) {
+        arms_sheet_apply(id, img, (int)w, (int)h, style, dirty, bw);
+    } else if (r->role == R_SHEET) {
         for (int g = 0; g < (int)sizeof k_sheet_roles; g++) {
             int y0 = (int)h - (g / 4 + 1) * 64;
             if (k_sheet_roles[g] && y0 >= 0 && (g % 4 + 1) * 64 <= (int)w && restyled(k_sheet_roles[g], style))

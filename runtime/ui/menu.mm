@@ -445,14 +445,23 @@ static void tab_display(void) {
     opt_section("Display");
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
-               "Original 16:9: the game's own framing, with bars on wider or taller windows. Unlocked: the image is "
-               "stretched to fill the window.");
+               "Original 16:9: the game's own framing, with bars on wider or taller windows. Unlocked: on wider windows "
+               "(21:9, 32:9) fights and character select show more of the arena, nothing stretched, the HUD in its "
+               "16:9 layout; menus, intros and movies stay 16:9 with bars.");
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
         g_want_fullscreen_apply.store(true);
     }
-    opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
+    {
+        static const char *const fps_modes[] = {"Off", "Simple", "Advanced"};
+        opt_choice("Frame rate counter", &g_settings.show_fps, fps_modes, 3, FPS_OFF,
+                   "The frame rate in the top right corner. Advanced adds the frame and GPU times, the slowest frame, "
+                   "the render and window sizes and a frame-time graph.");
+    }
+    opt_toggle("Rearmed logo & splash art", &g_settings.rearmed_art, true,
+               "ARMS Rearmed's own start screen and the REARMED tag on the logo, made from your game files when it "
+               "was set up. Off: the game's originals.");
     // (no frame rate choice: ARMS runs at 60 fps and steps its fights once a frame, so another rate would change the
     // game's speed - runtime/hle/vi.c)
 
@@ -651,7 +660,11 @@ static int g_ov_same;  // frames built in a row with g_ov_key
 static float g_fps_dt[60];
 static int g_fps_n, g_fps_i;
 static double g_fps_sum, g_fps_shown, g_fps_at;
+static float g_ft_hist[120];  // the last 120 frames' times (s): the Advanced counter's graph and slowest frame
+static int g_ft_i;
 static void fps_note(double now, float dt) {
+    g_ft_hist[g_ft_i] = dt;
+    g_ft_i = (g_ft_i + 1) % 120;
     if (g_fps_n == 60) g_fps_sum -= g_fps_dt[g_fps_i];
     else g_fps_n++;
     g_fps_dt[g_fps_i] = dt;
@@ -660,6 +673,139 @@ static void fps_note(double now, float dt) {
     if (now - g_fps_at >= 0.5 || now < g_fps_at) {
         g_fps_at = now;
         g_fps_shown = g_fps_sum > 0 ? g_fps_n / g_fps_sum : 0;
+    }
+}
+
+// ---- the frame rate counter (Video tab, Frame rate counter: Simple / Advanced), in the game's sporty look: a black
+// slanted chip (as the mode menu's 1P chip) with a hatched end (the game's ARMS LIVE stripes) and the rate in leaning
+// figures - the game's yellow, its orange-red below 55. Advanced adds a card under it: the frame time and the slowest
+// frame, the GPU time, the render and output size (upscaler, anti-aliasing) and a frame-time graph against 60 fps.
+#ifndef __APPLE__
+extern "C" double g_vk_gpu_ms;  // runtime/nvn/vulkan/device.c
+#endif
+extern "C" void renderer_get_scale(float *sx, float *sy);
+
+static void ov_slant_text(ImDrawList *dl, ImFont *f, float size, ImVec2 p, ImU32 col, const char *t, float shear = 0.22f) {
+    int v0 = dl->VtxBuffer.Size;
+    dl->AddText(f, size, p, col, t);
+    float base = p.y + size;
+    for (int i = v0; i < dl->VtxBuffer.Size; i++) dl->VtxBuffer[i].pos.x += (base - dl->VtxBuffer[i].pos.y) * shear;
+}
+static void ov_slab(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col, float skew) {  // (a leaning parallelogram)
+    dl->AddQuadFilled(ImVec2(a.x + skew, a.y), ImVec2(b.x + skew, a.y), ImVec2(b.x - skew, b.y), ImVec2(a.x - skew, b.y), col);
+}
+// A hazard tab (the game's ARMS LIVE stripes): the parallelogram a..b (leaning by `skew`) in `col`, crossed by thick
+// black stripes cut to its shape (each stripe clipped to the tab's sides, so the stripes and the edges stay crisp)
+static void ov_hazard(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col, float skew, float period, ImU32 dark) {
+    ov_slab(dl, a, b, col, skew);
+    const ImVec2 tab[4] = {ImVec2(a.x + skew, a.y), ImVec2(b.x + skew, a.y), ImVec2(b.x - skew, b.y), ImVec2(a.x - skew, b.y)};
+    float h = b.y - a.y, sw = period * 0.5f;
+    for (float t = a.x - skew - h - period; t < b.x + skew; t += period) {
+        ImVec2 poly[12] = {ImVec2(t + h, a.y), ImVec2(t + sw + h, a.y), ImVec2(t + sw, b.y), ImVec2(t, b.y)};  // (clockwise: ImGui's AA fill)
+        int n = 4;
+        for (int e = 0; e < 4 && n; e++) {  // Sutherland-Hodgman against each edge of the tab (clockwise on screen)
+            ImVec2 p = tab[e], q = tab[(e + 1) % 4], out[12];
+            int m = 0;
+            auto side = [&](ImVec2 v) { return (q.x - p.x) * (v.y - p.y) - (q.y - p.y) * (v.x - p.x); };  // >= 0: inside
+            for (int i = 0; i < n; i++) {
+                ImVec2 u = poly[i], v = poly[(i + 1) % n];
+                float su = side(u), sv = side(v);
+                if (su >= 0) out[m++] = u;
+                if ((su >= 0) != (sv >= 0) && m < 12) {
+                    float k = su / (su - sv);
+                    out[m++] = ImVec2(u.x + (v.x - u.x) * k, u.y + (v.y - u.y) * k);
+                }
+            }
+            n = m;
+            memcpy(poly, out, sizeof(ImVec2) * m);
+        }
+        if (n >= 3) dl->AddConvexPolyFilled(poly, n, dark);
+    }
+}
+
+static void fps_overlay_draw(ImVec2 disp, float s) {
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *big = g_menu_font_big ? g_menu_font_big : g_font_big ? g_font_big : ImGui::GetFont();
+    ImFont *small = g_menu_font ? g_menu_font : g_font ? g_font : ImGui::GetFont();
+    const ImU32 YEL = IM_COL32(239, 239, 0, 255), ORANGE = IM_COL32(243, 91, 53, 255), WHITE = IM_COL32(255, 255, 255, 255),
+                GREY = IM_COL32(150, 150, 150, 255);
+    float fps = (float)g_fps_shown;
+    ImU32 col = fps >= 55 || fps <= 0 ? YEL : ORANGE;
+    char num[16];
+    snprintf(num, sizeof num, "%.0f", fps);
+    // the chip: a hazard tab, a small gap, then the black slab with the rate; the slab, the tab and the figures all lean
+    // the same way (the figures' shear)
+    const float lean = 0.22f;
+    float nsz = 46 * s, lsz = 20 * s, h = 46 * s, skew = h * lean * 0.5f, m = 18 * s, tab = 18 * s, gap = 4 * s, pad = 12 * s;
+    ImVec2 nw = big->CalcTextSizeA(nsz, FLT_MAX, 0, num), lw = small->CalcTextSizeA(lsz, FLT_MAX, 0, "FPS");
+    float w = tab + gap + skew + pad + nw.x + 6 * s + lw.x + pad + skew;
+    float x1 = disp.x - m - skew, x0 = x1 - w, y0 = m, y1 = y0 + h, sx0 = x0 + tab + gap;  // (sx0: the slab's left)
+    ov_slab(dl, ImVec2(x0 + 3 * s, y0 + 3 * s), ImVec2(x1 + 3 * s, y1 + 3 * s), IM_COL32(0, 0, 0, 70), skew);  // (shadow)
+    ov_hazard(dl, ImVec2(x0, y0), ImVec2(x0 + tab, y1), col, skew, 11 * s, IM_COL32(16, 16, 16, 255));
+    ov_slab(dl, ImVec2(sx0, y0), ImVec2(x1, y1), IM_COL32(12, 12, 12, 238), skew);
+    // the figures, centred on the slab's middle line (the lean shifts them right above it, left below)
+    float tx = sx0 + skew + pad - skew * 0.5f, ty = y0 + (h - nsz) * 0.5f;
+    ov_slant_text(dl, big, nsz, ImVec2(tx, ty), col, num, lean);
+    ov_slant_text(dl, small, lsz, ImVec2(tx + nw.x + 6 * s, ty + nsz - lsz - 7 * s), WHITE, "FPS", lean);
+    if (g_settings.show_fps != FPS_ADVANCED) return;
+
+    // the card: the numbers behind the rate
+    float avg_ms = g_fps_n ? (float)(1000 * g_fps_sum / g_fps_n) : 0, worst = 0;
+    for (float v : g_ft_hist) if (v > worst) worst = v;
+    worst *= 1000;
+    float gpu = -1;
+#ifndef __APPLE__
+    gpu = (float)g_vk_gpu_ms;
+#endif
+    float sx = 1, sy = 1;
+    renderer_get_scale(&sx, &sy);
+    char rows[5][2][64];
+    snprintf(rows[0][0], 64, "Frame time");
+    snprintf(rows[0][1], 64, "%.1f ms", avg_ms);
+    snprintf(rows[1][0], 64, "Slowest frame");
+    snprintf(rows[1][1], 64, worst > 0 ? "%.1f ms  (%.0f fps)" : "-", worst, worst > 0 ? 1000 / worst : 0);
+    snprintf(rows[2][0], 64, "GPU");
+    snprintf(rows[2][1], 64, gpu >= 0 ? "%.1f ms" : "-", gpu);
+    snprintf(rows[3][0], 64, "Render");
+    snprintf(rows[3][1], 64, "%d \xC3\x97 %d  (%.2gx)", (int)lroundf(1920 * sx), (int)lroundf(1080 * sy), sx);
+    snprintf(rows[4][0], 64, "Output");
+    {   // (the upscaler only works when the render is smaller than the window: else it's scaled down, or shown as it is)
+        float rw = 1920 * sx;
+        const char *how = rw < disp.x - 0.5f ? (g_settings.upscaler == UPSCALE_BILINEAR ? "Bilinear" : "FSR 1")
+                        : rw > disp.x + 0.5f ? "scaled down" : "1:1";
+        snprintf(rows[4][1], 64, "%.0f \xC3\x97 %.0f  %s%s", disp.x, disp.y, how, g_settings.antialias == AA_SMAA ? " + SMAA" : "");
+    }
+    // (upright, its right edge under the chip's lower right corner: a card this tall leaning with the chip would drift)
+    float rsz = 22 * s, rh = 27 * s, gh = 62 * s, cpad = 14 * s, cskew = 0;
+    float vmax = 0;
+    for (auto &r : rows) vmax = fmaxf(vmax, small->CalcTextSizeA(rsz, FLT_MAX, 0, r[1]).x);
+    float cw = fmaxf(w, cskew * 2 + cpad * 2 + 128 * s + vmax), cy0 = y1 + 8 * s;
+    float cy1 = cy0 + cpad + 5 * rh + 8 * s + gh + cpad, cx1 = x1 - skew, cx0 = cx1 - cw;
+    ov_slab(dl, ImVec2(cx0 + 4 * s, cy0 + 4 * s), ImVec2(cx1 + 4 * s, cy1 + 4 * s), IM_COL32(0, 0, 0, 70), cskew);
+    ov_slab(dl, ImVec2(cx0, cy0), ImVec2(cx1, cy1), IM_COL32(10, 10, 10, 215), cskew);
+    {   // an accent along its top, leaning with the card's sides
+        float k = cskew * (1 - 2 * 3 * s / (cy1 - cy0));
+        dl->AddQuadFilled(ImVec2(cx0 + cskew, cy0), ImVec2(cx1 + cskew, cy0), ImVec2(cx1 + k, cy0 + 3 * s), ImVec2(cx0 + k, cy0 + 3 * s), col);
+    }
+    float lx = cx0 + cskew + cpad, rx = cx1 - cskew - cpad, y = cy0 + cpad;
+    for (auto &r : rows) {
+        dl->AddText(small, rsz, ImVec2(lx, y), GREY, r[0]);
+        dl->AddText(small, rsz, ImVec2(rx - small->CalcTextSizeA(rsz, FLT_MAX, 0, r[1]).x, y), WHITE, r[1]);
+        y += rh;
+    }
+    // the graph: the last 120 frames' times, 0 to 33.3 ms, against 16.7 ms (60 fps)
+    float gx0 = lx, gx1 = rx, gy0 = y + 8 * s, gy1 = gy0 + gh;
+    dl->AddRectFilled(ImVec2(gx0, gy0), ImVec2(gx1, gy1), IM_COL32(255, 255, 255, 16));
+    float g60 = gy1 - gh * 0.5f;
+    for (float gx = gx0; gx < gx1; gx += 10 * s) dl->AddLine(ImVec2(gx, g60), ImVec2(fminf(gx + 5 * s, gx1), g60), IM_COL32(239, 239, 0, 110), 1.5f * s);
+    dl->AddText(small, 16 * s, ImVec2(gx0 + 4 * s, g60 - 18 * s), IM_COL32(239, 239, 0, 170), "60 fps");
+    ImVec2 prev(0, 0);
+    for (int i = 0; i < 120; i++) {
+        float v = g_ft_hist[(g_ft_i + i) % 120] * 1000;
+        float yy = gy1 - fminf(v, 33.3f) / 33.3f * gh;
+        ImVec2 p(gx0 + (gx1 - gx0) * i / 119.0f, yy);
+        if (i) dl->AddLine(prev, p, v > 20 ? ORANGE : WHITE, 2 * s);
+        prev = p;
     }
 }
 
@@ -975,16 +1121,18 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (g_ov_cache < 0) g_ov_cache = !getenv("LARECOMP_OVERLAY_CACHE") || atoi(getenv("LARECOMP_OVERLAY_CACHE")) != 0;
     char key[sizeof g_ov_key];
     key[0] = 0;
+    fps_note(now, io.DeltaTime);
     if (g_ov_cache) {
-        fps_note(now, io.DeltaTime);
         char rk[64];
         // (only the FPS counter and the run timer; input only reaches ImGui while the menu or the name entry is up)
         if (!open && !kbd && !inv && !trk && !trkd && !chaos && !flyin && !notice && race_overlay_key(rk, sizeof rk)) {
             pthread_mutex_lock(&q_lock);
             bool events = !q_events.empty();
             pthread_mutex_unlock(&q_lock);
-            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f | %s", tw, th, (int)g_settings.show_fps,
-                                  g_settings.show_fps ? g_fps_shown : 0.0, rk);
+            // (the Advanced counter's graph moves every frame: its key changes every frame)
+            if (!events) snprintf(key, sizeof key, "%.0fx%.0f fps %d %.0f %d | %s", tw, th, (int)g_settings.show_fps,
+                                  g_settings.show_fps ? g_fps_shown : 0.0,
+                                  g_settings.show_fps == FPS_ADVANCED ? g_ft_i : -1, rk);
         }
         ImDrawData *dd = ImGui::GetDrawData();
         if (key[0] && g_ov_same >= 3 && !strcmp(key, g_ov_key) && dd && dd->Valid) {
@@ -1036,14 +1184,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     ImGui::NewFrame();
 
-    if (g_settings.show_fps) {
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
-        ImGui::SetNextWindowBgAlpha(0.5f);
-        ImGui::Begin("##fps", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
-        ImGui::Text("%.0f fps", g_ov_cache ? g_fps_shown : io.Framerate);
-        ImGui::End();
-    }
+    if (g_settings.show_fps) fps_overlay_draw(io.DisplaySize, scale);
 
     if (race) race_overlay_draw(io.DisplaySize, g_menu_font_big, scale);
     if (notice) notice_draw(io.DisplaySize, g_menu_font, scale);

@@ -293,7 +293,41 @@ bool input_user_blocked(const SDL_Event *e) {
 // game's ui_run and the start screen).
 static bool cursor_hidden;  // (the start screen keeps ImGui's backend from showing it again meanwhile)
 bool input_cursor_hidden(void) { return cursor_hidden; }
+
+// The device used last, for "Button icons: Auto" (runtime/nvn/texpatch.c: key caps or the controller's buttons): a key
+// or mouse button, the wheel, or the mouse moved a good way since the controller's last use makes it the keyboard
+// and mouse; a controller button, or a stick / trigger pushed well past drift, the controller. Before either: the
+// keyboard and mouse unless a controller is connected. (Main thread: the event loops.)
+static _Atomic int last_kbm = -1;
+int input_last_kbm(void) {
+    int v = last_kbm;
+    return v >= 0 ? v : pad == NULL;
+}
+static void note_last_device(const SDL_Event *e) {
+    static float moved;  // (points the mouse moved since the controller was used)
+    int kbm = -1;
+    switch (e->type) {
+    case SDL_EVENT_KEY_DOWN: if (!e->key.repeat) kbm = 1; break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_WHEEL: kbm = 1; break;
+    case SDL_EVENT_MOUSE_MOTION:
+        moved += fabsf(e->motion.xrel) + fabsf(e->motion.yrel);
+        if (moved > 40) kbm = 1;
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN: kbm = 0; break;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: if (abs(e->gaxis.value) > 16000) kbm = 0; break;
+    default: break;
+    }
+    if (kbm < 0) return;
+    if (!kbm) moved = 0;
+    if (kbm != last_kbm) {
+        if (last_kbm >= 0 || kbm != (pad == NULL))
+            LOG("[input] button icons follow the %s\n", kbm ? "keyboard and mouse" : "controller");
+        last_kbm = kbm;
+    }
+}
+
 void input_cursor_event(const SDL_Event *e) {
+    note_last_device(e);
     static float moved;  // (points the mouse moved since the cursor was hidden)
     bool hide = false, show = false;
     switch (e->type) {

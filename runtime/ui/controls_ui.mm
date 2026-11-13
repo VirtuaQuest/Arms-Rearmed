@@ -276,11 +276,13 @@ extern "C" void controls_tab_draw(float scale) {
     }
     {
         static const char *const fam[] = {"Nintendo", "Xbox", "PlayStation"};
+        extern int input_last_kbm(void);
         char autol[64];
-        snprintf(autol, sizeof autol, "Auto (%s)", fam[input_pad_family() % 3]);
-        const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation"};
-        opt_choice("Button icons", &g_settings.prompts, names, 4, PROMPTS_AUTO,
-                   "The button icons the game shows. Auto: the connected controller's.");
+        snprintf(autol, sizeof autol, "Auto (%s)", input_last_kbm() ? "Keyboard & mouse" : fam[input_pad_family() % 3]);
+        const char *names[] = {autol, "Nintendo", "Xbox", "PlayStation", "Keyboard & mouse"};
+        opt_choice("Button icons", &g_settings.prompts, names, 5, PROMPTS_AUTO,
+                   "The button icons the game shows. Auto: whatever you used last - the keyboard and mouse, or the "
+                   "connected controller's buttons.");
     }
     {
         static const char *const names[] = {"Game layout", "Controller convention"};

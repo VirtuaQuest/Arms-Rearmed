@@ -1,7 +1,7 @@
 # Third-party components in the ARMS Rearmed release
 
 ARMS Rearmed's release zip contains **no game code, game data, art, fonts or keys from Nintendo**. The player supplies
-their own legally obtained copy of ARMS, its 5.4.0 update and their console's keys; the game code is recompiled from
+their own legally obtained copy of ARMS, its 5.4.0 or 5.5.1 update and their console's keys; the game code is recompiled from
 those files on the player's own PC by the tools below.
 
 ARMS Rearmed is built on LAS Recomp by Peiikai and contributors (MIT License, `LICENSE.LASRecomp`). These components
@@ -22,6 +22,8 @@ are bundled and keep their own licenses. Source code for the exact versions ship
 | Unicorn (armsgen; a separate program the launcher runs) | 2.1.4 | GPL 2.0 (Python bindings: BSD) | https://pypi.org/project/unicorn/2.1.4/, https://github.com/unicorn-engine/unicorn |
 | python-lz4 (armsgen; includes LZ4) | 4.4.5 | BSD 3-clause; LZ4: BSD 2-clause | https://pypi.org/project/lz4/4.4.5/ |
 | PyCryptodome (armsgen) | 3.23.0 | BSD 2-clause / public domain | https://pypi.org/project/pycryptodome/3.23.0/ |
+| Pillow (armsgen: draws the Rearmed logo & splash art at setup) | 13.0.0 | MIT-CMU (HPND) | https://pypi.org/project/pillow/13.0.0/ |
+| Kenney Input Prompts: the PlayStation 5, Xbox Series and mouse outlines (`third_party/kenney_input_prompts`, in armsgen) | 1.5A | CC0 1.0 | https://www.kenney.nl/assets/input-prompts |
 | Dear ImGui (built in) | 1.91.9 | MIT | https://github.com/ocornut/imgui |
 | SMAA (shader and lookup textures, built in) | 2013 | MIT | https://github.com/iryoku/smaa |
 | AMD FidelityFX FSR 1 (built in) | 1.0 | MIT | https://github.com/GPUOpen-Effects/FidelityFX-FSR |

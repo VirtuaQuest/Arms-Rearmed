@@ -41,6 +41,10 @@
 #include <windows.h>
 #endif
 
+#ifndef ARMS_VERSION
+#define ARMS_VERSION "dev"  // (the Makefile's VERSION: the splash's version line, tools/branding.py)
+#endif
+
 // ================================================================== palette
 static const ImU32 C_YELLOW = IM_COL32(255, 225, 10, 255), C_YELLOW2 = IM_COL32(255, 205, 0, 255);
 static const ImU32 C_BLACK = IM_COL32(18, 18, 22, 255), C_INK = IM_COL32(28, 28, 36, 240);
@@ -185,7 +189,9 @@ static const Choice k_render[] = {{"Match display", "match"}, {"1x (1080p)", "1x
                                   {"50% of the display", "50%"}, {"Auto (this GPU's default)", "auto"}};
 static const Choice k_upscaler[] = {{"Auto", "auto"}, {"AMD FSR 1 (sharp)", "fsr1"}, {"Bilinear (soft)", "bilinear"}};
 static const Choice k_aa[] = {{"Off", "off"}, {"SMAA", "smaa"}};
-static const Choice k_aspect[] = {{"Original 16:9 (bars on wider screens)", "original"}, {"Stretch to the window", "unlocked"}};
+static const Choice k_fps_modes[] = {{"Off", "0"}, {"Simple (the rate)", "1"}, {"Advanced (times, sizes, graph)", "2"}};
+static const Choice k_aspect[] = {{"Original 16:9 (bars on wider screens)", "original"},
+                                  {"Unlocked (ultrawide: a wider view, nothing stretched)", "unlocked"}};
 static int choice_index(const Choice *c, int n, const std::string &v) {
     for (int i = 0; i < n; i++) if (v == c[i].value) return i;
     return 0;
@@ -210,7 +216,9 @@ static void list_modes(void) {
 }
 
 static int s_mode, s_size, s_render, s_upscaler, s_aa, s_aspect;
-static bool s_show_fps, s_rumble, s_bg_input;
+static bool s_rumble, s_bg_input;
+static bool s_rearmed_art = true;  // (the game's Rearmed logo & splash art: Video tab)
+static int s_show_fps;  // (0 off, 1 simple, 2 advanced: the game's Frame rate counter)
 static float s_volume = 1.0f;
 
 static void settings_from_ini(void) {
@@ -224,7 +232,9 @@ static void settings_from_ini(void) {
     s_upscaler = choice_index(k_upscaler, IM_ARRAYSIZE(k_upscaler), I.get("upscaler", "auto"));
     s_aa = choice_index(k_aa, IM_ARRAYSIZE(k_aa), I.get("antialias", "off"));
     s_aspect = choice_index(k_aspect, IM_ARRAYSIZE(k_aspect), I.get("aspect", "original"));
-    s_show_fps = atoi(I.get("show_fps", "0").c_str()) != 0;
+    s_show_fps = atoi(I.get("show_fps", "0").c_str());
+    if (s_show_fps < 0 || s_show_fps > 2) s_show_fps = 0;
+    s_rearmed_art = atoi(I.get("rearmed_art", "1").c_str()) != 0;
     s_rumble = atoi(I.get("rumble", "1").c_str()) != 0;
     s_bg_input = atoi(I.get("background_input", "0").c_str()) != 0;
     s_volume = (float)atof(I.get("volume", "1.0").c_str());
@@ -239,7 +249,8 @@ static bool settings_to_ini(void) {
     I.set("upscaler", k_upscaler[s_upscaler].value);
     I.set("antialias", k_aa[s_aa].value);
     I.set("aspect", k_aspect[s_aspect].value);
-    I.set("show_fps", s_show_fps ? "1" : "0");
+    I.set("show_fps", std::to_string(s_show_fps));
+    I.set("rearmed_art", s_rearmed_art ? "1" : "0");
     I.set("rumble", s_rumble ? "1" : "0");
     I.set("background_input", s_bg_input ? "1" : "0");
     char v[32];
@@ -673,7 +684,8 @@ static void release_steps(bool extract, bool recompile, bool build) {
     if (extract) {
         std::string c = gen + " extract " + q(p_base) + " " + q(p_keys) + " extracted";
         if (p_update[0]) c += " --update " + q(p_update);
-        c += " --title 01009B500007C000 --build 501924b7c22129e5 --want \"ARMS 5.4.0\"";  // (else: why, in one line)
+        c += " --title 01009B500007C000 --build 501924b7c22129e5,bba3811191de71d9 --want \"ARMS 5.4.0 or 5.5.1\"";  // (else: why, in one line)
+        c += " --branding --port-version " ARMS_VERSION;  // (the Rearmed logo & splash art: tools/branding.py)
         Step s = {"Extract the game's code", c, g_root, false};
         s.weight = 1;
         g_steps.push_back(s);
@@ -725,6 +737,7 @@ static void start_steps(bool extract, bool recompile, bool build) {
     if (extract) {
         std::string c = q(py) + " -I tools\\nsp_extract.py " + q(p_base) + " " + q(p_keys) + " extracted";
         if (p_update[0]) c += " --update " + q(p_update);
+        c += " --branding --port-version " ARMS_VERSION;  // (the Rearmed logo & splash art: tools/branding.py)
         g_steps.push_back({"Extract the game's code", c, g_root, false});
     }
     std::string make = q(std::string(p_msys) + "\\usr\\bin\\make.exe");
@@ -965,8 +978,13 @@ static void page_play(void) {
     const char *modes[] = {"Windowed", "Borderless fullscreen", "Exclusive fullscreen"};
     ImGui::SetNextItemWidth(320 * g_scale);
     ImGui::Combo("##mode_play", &s_mode, modes, 3);
+    row_label("Aspect ratio", lw);
+    ImGui::SetNextItemWidth(320 * g_scale);
+    combo("##aspect_play", &s_aspect, k_aspect, IM_ARRAYSIZE(k_aspect));
     row_label("Frame rate counter", lw);
-    ImGui::Checkbox("##fps_play", &s_show_fps);
+    combo("##fps_play", &s_show_fps, k_fps_modes, 3);
+    row_label("Rearmed logo & splash art", lw);
+    ImGui::Checkbox("##rearmed_art_play", &s_rearmed_art);
     ImGui::Spacing();
     hint("Keyboard and mouse: WASD move, left / right mouse punch, middle mouse (or both) grab, Space jump, Shift dash, "
          "Ctrl guard, Q / E rush. Controllers work too. Esc or F1 in game opens the menu (controls, video, audio).");
@@ -994,7 +1012,7 @@ static void page_setup(SDL_Window *win) {
     ImGui::Spacing();
     float lw = 270 * g_scale;
     path_row("Base game (XCI or NSP)", p_base, sizeof p_base, 0, win, false, lw);
-    path_row("5.4.0 update (NSP)", p_update, sizeof p_update, 1, win, false, lw);
+    path_row("Update: 5.4.0 or 5.5.1 (NSP)", p_update, sizeof p_update, 1, win, false, lw);
     path_row("Keys (prod.keys)", p_keys, sizeof p_keys, 2, win, false, lw);
     ImGui::Spacing();
     if (g_release) {
@@ -1115,7 +1133,11 @@ static void page_graphics(void) {
     ImGui::SameLine();
     ImGui::TextColored(V(C_GREY), "(ARMS's own: its fights step once a frame)");
     row_label("Frame rate counter", lw);
-    ImGui::Checkbox("##fps", &s_show_fps);
+    combo("##fps", &s_show_fps, k_fps_modes, 3);
+    row_label("Rearmed logo & splash art", lw);
+    ImGui::Checkbox("##rearmed_art", &s_rearmed_art);
+    ImGui::SameLine();
+    ImGui::TextColored(V(C_GREY), s_rearmed_art ? "(the Rearmed start screen and REARMED tag)" : "(the game's original logo and start screen)");
     hint("Internal resolution renders the game above (2x, 3x, 4x) or below its own 1080p. Dynamic lowers it on the fly "
          "to hold 60 fps. F11 or Alt+Enter switches fullscreen in game.");
     ImGui::Spacing();
@@ -1278,7 +1300,7 @@ static int prepare_cli(int argc, char **argv) {
     if (!g_release) return fail("This isn't a release folder (armsgen, zig and gamelib-src next to the launcher).");
     if (!p_base[0] || !is_file(p_base)) return fail("The game (an XCI or NSP of ARMS) wasn't found: " + std::string(p_base));
     if (!p_keys[0] || !is_file(p_keys)) return fail("The keys file (prod.keys) wasn't found: " + std::string(p_keys));
-    if (!p_update[0] || !is_file(p_update)) return fail("The 5.4.0 update (NSP) wasn't found: " + std::string(p_update));
+    if (!p_update[0] || !is_file(p_update)) return fail("The update (5.4.0 or 5.5.1 NSP) wasn't found: " + std::string(p_update));
     paths_to_ini();
     start_steps(true, true, true);
     g_worker.join();

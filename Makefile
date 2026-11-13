@@ -18,6 +18,10 @@ DEPS     ?=
 
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
             $(if $(DEPS),-I$(DEPS)/include)
+# Vulkan Memory Allocator (vk_mem_alloc.h): MSYS2's mingw-w64-ucrt-x86_64-vulkan-memory-allocator puts it in include/vma
+ifneq ($(wildcard /ucrt64/include/vma/vk_mem_alloc.h),)
+OSFLAGS  += -I$(shell cygpath -m /ucrt64/include/vma)
+endif
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h)
 GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime \
             -D_FILE_OFFSET_BITS=64 $(GENARCH)
@@ -137,7 +141,8 @@ $(B)/icon_res.o: $(ICON_ICO)
 LAUNCHER := $(B)/armslauncher.exe
 LAUNCHER_IMGUI := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
                   $(B)/imgui/imgui_impl_sdl3.o $(B)/imgui/imgui_impl_sdlrenderer3.o
-$(B)/launcher/launcher.o: launcher/launcher.cpp
+$(B)/launcher/launcher.o: CXXFLAGS += -DARMS_VERSION='"$(VERSION)"'
+$(B)/launcher/launcher.o: launcher/launcher.cpp Makefile
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 $(LAUNCHER): $(B)/launcher/launcher.o $(LAUNCHER_IMGUI) $(ICON_RES) $(if $(ICON_SRC),$(B)/icon.png)
@@ -180,7 +185,8 @@ gen-helper: build/gen-venv/.ok
 	@du -sh build/helper/armsgen
 build/gen-venv/.ok:
 	$(GEN_PY) -m venv build/gen-venv
-	$(GEN_VPY) -m pip install -q unicorn==2.1.4 capstone==5.0.9 lz4==4.4.5 pycryptodome==3.23.0 pyinstaller==6.22.3
+	$(GEN_VPY) -m pip install -q unicorn==2.1.4 capstone==5.0.9 lz4==4.4.5 pycryptodome==3.23.0 pillow==13.0.0 \
+	    pyinstaller==6.22.3
 	touch $@
 
 dist:

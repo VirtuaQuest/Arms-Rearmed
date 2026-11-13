@@ -81,6 +81,8 @@ typedef struct {
                             // (c0 0x110 + 16 * i vertex, 0x510 + 16 * i fragment): the slots it actually uses
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
+    uint64_t cb3_rows;      // the vec4 rows 0-63 of game constant buffer slot 0 (cb3) read at constant offsets
+                            // (widescreen: whether a vertex shader uses the camera's view-projection, exec.c)
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
     char error[256];        // set when translation fails
