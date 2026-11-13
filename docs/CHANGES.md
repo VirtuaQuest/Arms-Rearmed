@@ -182,6 +182,230 @@ inherited "LAS Recomp" ones included (message boxes, the crash dialog, the CPU c
   `--game=` (same as `--base=`) and each option as two arguments (`--keys <prod.keys>`). Without these options
   nothing changed. README: the "Get it on RecompLauncher" badge.
 
+## ARMS 5.5.1, scaled resolutions fixed (2026-11-13)
+
+**ARMS 5.5.1 supported** (update title 01009B500007C800 v19, main build ID BBA3811191DE71D9B55E53F918AE5DC1),
+beside 5.4.0. Its `main` loads to the same size as 5.4.0's (0x1769000) and the runtime needs no game addresses yet
+(`GameAddrs` is empty; the addresses in `runtime/hle/game_hooks.c` are MUA3 leftovers that never run), so the two
+versions share an empty table. Recompiled from a 5.5.1 copy: no unsupported instructions; boots, prepares 1788
+shaders (82 of the list's 5.4.0 variants not found), title, menus, character select and Grand Prix fights at 60 fps.
+- `runtime/game_addresses.c`: the 5.5.1 entry; the unsupported-version message names both versions.
+- `tools/nsp_extract.py`: `--build` takes several build IDs, comma separated.
+- `launcher/launcher.cpp`: the release's extract step accepts both build IDs; the GAME FILES row and the prepare
+  error say "5.4.0 or 5.5.1".
+- `runtime/crash_explain.c`: the wrong-version explanation names both versions.
+
+**Scaled internal resolutions (above 1x) drew the 3D scene into the top-left corner.** At 2x the scene, the fighters
+and character select's fighter showed in the top-left quarter of the screen, with black fighter silhouettes over the
+rest. ARMS's scene pass draws an R8 fighter mask (the composite's "fighter pixels", see "Fixed: the fighters") beside
+the colour target, and creates it without the compressible flag (`flags & 8`), which `tex_scalable` takes as the
+mark of a render target: the mask stayed at the guest size, and the pass, clipped to its smallest attachment, drew
+only that part of the scaled colour target. A render target drawn in the same pass as scaled ones of its guest size
+now follows their scale (`textures.c` `vk_tex_follow_scale`, called from `exec.c` `begin_pass`; its image is made
+again at the render scale). Nothing changes at 1x. Checked at 2x in a 2560x1440 window: menus, character select,
+difficulty select, the ARMS LIVE intro and a Grand Prix fight fill the window.
+
+**Button icons in your input's style: PlayStation, Xbox, keyboard and mouse.** ARMS draws its button prompts as
+characters of an icon font (U+E0A0.., the Switch's NintendoExt layout: an outline set from E0A0, a filled set from
+E0E0; the game tints them: the yellow footer, the orange L / R): one BC4 mask sheet, 512x1024, cells 43x49 in 11
+columns, rows from the bottom and each upside down, in `Font/BmpFont_<region>.szs` (Yaz0 > SARC >
+`ARMSIconFont.bffnt`). `runtime/nvn/texpatch.c` (LAS Recomp's prompt restyling, which knew only Link's Awakening's
+textures) now reads that font from the player's own files (in place from the NSPs: `romfs_file_find`; a small Yaz0
+decoder; the sheet's image starts at its offset rounded up to the texture's 0x2000 block, not at the 0x1000 the
+font's TGLP field gives) and identifies the sheet when the game uploads it (a new BC4 kind in the codecs).
+- Restyled glyphs (both sets): A B X Y L R ZL ZR, Plus and Minus, the L / R stick, the L / R stick press (ARMS:
+  guard is the left stick's press).
+- PlayStation / Xbox: the existing relabelling (✕ ○ □ △, L1 / R1 / L2 / R2, Options / Create; Xbox letters, LB / RB /
+  LT / RT, Menu / View); the outline set's round buttons are redrawn whole (a ring at the font's stroke width with
+  the symbol: relabelling thinned the ring); stick presses become L3 / R3 (LS / RS). By position, as the bindings
+  say (Switch A = the right face button = ○).
+- Keyboard and mouse (new style): each glyph is redrawn as a key cap or a mouse with its button marked, in the
+  set's look (filled: the label cut out of the cap; outline: drawn), from the keyboard bindings (`g_bind_key`):
+  letters and digits, Ctrl / Alt / Tab / Esc / Caps, symbols for Shift, Space, Enter, Backspace and the arrows; the
+  sticks show their four movement keys as four small caps laid out like arrow keys (W over A S D; the right stick's
+  numpad 8 over 4 5 6: one cap reading "8456" said nothing), or the up key's own cap when a direction isn't a single
+  character. Labels of any length are fitted to the cap.
+- "Button icons" (Controls tab) has a Keyboard & mouse choice (`prompts = keyboard` in larecomp.ini), and Auto now
+  follows the device used last (`runtime/hle/input.c` `input_last_kbm`: a key, a mouse button, the wheel or the mouse
+  moved a good way; a controller button or a stick / trigger pushed past drift); before either, the keyboard unless a
+  controller is connected. A change re-uploads the sheet (`texpatch_generation`, which now also follows the keyboard
+  bindings in that style).
+- Checked: the title ("PRESS L1 + R1", "PRESS Q + E"), the main menu and character select footers.
+- `LARECOMP_PROMPTS=keyboard` (test override, beside nintendo / xbox / playstation); `LARECOMP_LOG_ICONS=1` logs
+  each restyled glyph (code, cell, icon).
+
+**Rearmed logo & splash art** (Video tab, the launcher's GRAPHICS page and RecompLauncher's Display settings,
+`rearmed_art` in larecomp.ini, on by default; `LARECOMP_REARMED_ART=0/1`
+overrides it for tests). ARMS Rearmed's own boot splash and a REARMED tag on the logo, drawn at setup from the
+player's own game files, so nothing of the game ships:
+- `tools/branding.py` (run by `nsp_extract.py --branding`, which the launcher's extract step now passes, with the
+  Makefile's VERSION): reads the game's layouts, fonts and textures in place from the NSPs and draws
+  - the boot splash (`Boot_Strap_00`'s `Boot_ControllerStrap`, 1600x900 BC7) in the original's layout and colours: the
+    game's logo with REARMED set as the game sets "ARMS LIVE" (`Common_Live_00`: the word in the display face, wide and
+    leaning, white on thin diagonal stripes), "Play it your way!", keyboard and mouse / PlayStation / Xbox (Kenney's
+    Input Prompts outlines, CC0, `third_party/kenney_input_prompts`, in the game's controller colours with a white
+    rim), what this port is and who made it, and the keyboard controls;
+  - the intro's logo (`Logo_Title_04`, a 640x160 BC4 mask): the logo with a one-colour tag under it (REARMED cut out
+    of a leaning, hatched block, so it takes the game's tint);
+  - the loading circle (`Common_FadeShort_00`'s `Fade_Logo_00`, 720x720 BC7): the striped tag under its logo.
+  The text uses the game's own fonts (`Font/BmpFont_<region>.szs`: ARMSSpecialFont, ARMSNTLGFont, BC4 sheets; each
+  sheet's image starts at its slot rounded up to the 0x2000 block). Output: `extracted/branding/` (`manifest.txt`, the
+  textures' own bytes as `.orig`, the new images as `.rgba`, and `.png` copies to look at).
+- `runtime/nvn/texpatch.c`: the manifest's textures are recognised by their bytes when the game uploads them and, while
+  the setting is on, replaced by the new image encoded in the texture's own format: BC4 (the existing encoder) or BC7
+  (a new mode 6 encoder: one subset, 7-bit RGBA endpoints with p-bits, 4-bit indices). The setting is part of
+  `texpatch_generation`, so switching it re-uploads them.
+- `runtime/nvn/vulkan/exec.c`: in a frame that draws the Rearmed splash, the draws after it that sample the message
+  fonts' 1024x1024 BC4 sheets or the button-icon sheet are skipped: the game's own text for its splash ("This is the
+  thumbs-up grip!", the strap instructions) doesn't land on the new art, which carries its own.
+- Checked at 1600x900: the splash and the intro logo with the setting on, the originals with it off. The loading
+  circle's art is made and its swap is the splash's, but no screen in the Grand Prix or Training paths showed the
+  circle yet.
+- Setup: `tools/armsgen.spec` bundles Pillow and the Kenney outlines (the release's armsgen runs `extract --branding`);
+  `make gen-helper`'s environment installs Pillow. If the art can't be made, setup goes on and the game keeps its own.
+- `LARECOMP_WINDOW_POS=x,y` (tests): where the window opens on the desktop.
+
+**Frame rate counter: Off / Simple / Advanced**, in the game's look (`runtime/ui/menu.mm` `fps_overlay_draw`; Video tab,
+the launcher's PLAY and GRAPHICS pages and RecompLauncher's settings; `show_fps` in larecomp.ini is now 0 / 1 / 2, and an
+old 1 is Simple). Simple: a black slanted chip in the top right, as the mode menu's 1P chip, led by a hazard tab (the
+game's LIVE stripes: thick dark stripes on the rate's colour, each clipped to the tab's leaning sides) and the rate in
+leaning Baloo 2 figures, the game's yellow at 55 fps and up, its orange-red below; chip, tab and figures share one lean.
+Advanced adds an upright card under it (its right edge under the chip's corner): the frame time, the slowest of the last 120 frames, the GPU time (the game's work and
+the window image: `device.c` `g_vk_gpu_ms`), the render size and scale, the window size with how the image reaches it
+(FSR 1 / bilinear when upscaled, scaled down, 1:1; SMAA) and a graph of the last 120 frame times against 60 fps.
+Checked in a 1600x900 window, both modes (`LARECOMP_WINDOW_SHOT`).
+
+**Ultrawide: wider views without stretching.** Video tab, *Aspect ratio* = **Unlocked** (`aspect = unlocked` in larecomp.ini). On a window wider than
+16:9 (21:9 3440x1440 tested; 32:9 should behave the same), it works at every *Internal resolution* (Match, 1x–4x,
+Dynamic, the % modes) and when either setting changes while the game runs. What you see on each screen:
+
+| Screen | Ultrawide |
+|---|---|
+| Fights (incl. the ARMS choice, KO, replay) | Wider arena at the game's own vertical field of view; HUD at its 16:9 positions; never bars |
+| Character select | The fighter's wider view; the swirl backdrop covers the window; roster and buttons boxed |
+| Boot strap screen, logo intro, title, main menu, VS card | 16:9 in the centre, black bars, nothing clipped or stretched |
+| Grand Prix ARMS LIVE broadcast (Biff), profile cards | Same: black bars |
+| Movies | 16:9 with bars (unchanged) |
+
+Nothing is ever stretched. *Original 16:9* is unchanged: none of this runs while the window and the game's targets
+have the same shape. Before this change, *Unlocked* gave the same 16:9 picture with bars, and its help text said the
+image was stretched.
+
+**Ultrawide, how it works:**
+
+**Wider targets.** This part was already there. With widescreen allowed, `runtime/nvn/output_scale.c` allocates the
+game's scalable render targets at the window's shape (`ax = h x shape`, `ay = h`, `shape = window aspect / (16/9)`),
+at every internal resolution.
+
+**Wider frustum.** ARMS keeps its scene camera in constant buffer slot 0 (`cb3`) as rows of 4 floats:
+
+| Rows | Contents |
+|---|---|
+| 0–2 | View |
+| 3–6 | ViewProj |
+| 7–10 | Proj |
+| 11–13 | InvView |
+| 21–34 | The previous frame's copies (ViewProj 24–27, Proj 28–31) |
+| 42–49 | The shadow cascades |
+
+A scene camera has Proj's last row (row 10) equal to `(0, 0, -1, 0)` (`runtime/hle/widescreen.c:
+widescreen_scene_camera()`). For a draw into the scene's widened targets (scaled, at least 256 wide, not the presented
+image) with such a camera bound, `runtime/nvn/vulkan/exec.c` does three things:
+
+1. **The camera block's ViewProj is widened** in the copy both stages get: x rows 3 and 24 are scaled by 1/shape (for
+   windows taller than 16:9, y rows 4 and 25 by shape). Shaders that place vertices with it, and the screen positions
+   they derive from it, agree. One example is the stage's fog / light-scattering volume, which samples the depth at
+   those positions. Proj stays as the game wrote it: widening it turned the fighters black, because their shading
+   reads it.
+2. **Vertex shaders that place vertices with Proj** (the fighters: View, then Proj) have their clip position scaled
+   after them. `runtime/nvn/maxwell/translate.c` ends every vertex shader with `gl_Position.xy *= rscale[0].xy` (set
+   0, binding 18). exec.c sets that to `(1/shape, 1)` only for a vertex shader that reads slot 0's Proj rows 7/8 and
+   not ViewProj rows 3/4. `ShaderInfo.cb3_rows` (translator) records which rows a shader reads at constant offsets.
+   Draws that don't read the camera are never touched. Slot 0 stays bound from earlier draws, and squeezing the
+   half-size depth's downsample (one full-screen triangle) left stale depth in a strip at the left edge. That showed as
+   a lighter band and a seam left of the 16:9 area in fights at any internal resolution, and probably as the offset
+   dark silhouettes seen at 2x.
+3. **The effects' own camera copies.** The effect shaders (particles, impact VFX) don't read slot 0. Their own
+   constant buffer holds copies of the camera's Proj and ViewProj. For a vertex shader that doesn't use slot 0's
+   camera, rows in its other buffers that equal the camera's ViewProj or Proj x row exactly are widened the same way
+   (x row by 1/shape, the y row after it by shape).
+
+**The 2D UI.** ARMS draws its 2D layout (nn::ui2d) into a scalable canvas at the game's resolution (1600x900,
+1872x1053, ...). A full-target quad then blits that canvas into a part of the presented 1920x1080. exec.c remembers
+the canvases that blit reads (the last four), keyed by texture object, image, guest address, size and format, because
+the game reuses texture objects. Draws into a canvas are handled like draws into the presented image: composites that
+read a widened texture (the scene) fill the window, and everything else goes in a centred 16:9 box (uniform scale).
+
+**Panes that span the screen.** `widescreen_ui_pane()` reads ui2d's per-pane constant block (rows 0–3 the projection,
+4–6 the pane's model-view, row 33 the pane rectangle w, h, left, top in the 1280x720 layout). From that it works out
+the pane's screen extent:
+- A **flat** pane (textures of 64 texels at most: colours, gradients) spanning the width fills it.
+- When a widened 3D scene is drawn that frame, these **cover** the window (scaled evenly, top and bottom cropped):
+  - the **layout's own backdrop** (1280x720 at scale 1: character select's swirl);
+  - **full-screen pictures drawn over the 3D** (the fights' damage flash, the KO and replay wipes).
+- Any **other picture spanning the width** stays boxed. When it's the bottom of the 2D (a 2D screen's backdrop: the
+  strap screen, the title, the menus, the ARMS LIVE broadcast's still, the VS card), the bars are cleared to black, as
+  in Original 16:9. The game renders a hidden 3D scene under those screens, and without the clear it showed in the
+  bars. Fights never get bars.
+
+**Ultrawide, verified at 3440x1440:**
+
+Window shots via `LARECOMP_WINDOW_SHOTS`:
+- **Unlocked at Match, 2x, 3x and Dynamic:**
+  - boot screens, title, main menu, VS card, ARMS LIVE broadcast: black bars, nothing clipped;
+  - character select with Spring Man and Ribbon Girl: wide, no dark patches;
+  - Grand Prix fights: wider arena, coloured fighters, HUD at its 16:9 positions.
+- **No seam:** the brightness step at the box edges, averaged over 6 fight frames per run, is ≤ 1.3, at the level of
+  the control columns. It was 4–15 before the fix, and up to 245 in the quarter-size fog buffer.
+- **Original 16:9 at 2x:** unchanged.
+- **Settings changed while running:** Original to Unlocked (`LARECOMP_ASPECT_AT`) and Match to 2x (`LARECOMP_RES_AT`).
+- The solid black "KO" splash is the game's own look (identical in 16:9).
+
+**Ultrawide, known gaps:**
+
+- The HUD is boxed, not anchored to the window's edges. The timer and portraits sit at the top-left of the centred
+  16:9 area. `widescreen_ui_pane()` already tells which panes reach the left or right edge (kinds 3 and 4). Anchoring
+  was left out because panes sliding in from the edge would jump when they stop touching it.
+- The short "ARMS GRAND PRIX — Match N" wipe between the broadcast and the VS card shows the widened arena at the
+  sides rather than black bars. It's an overlay, not a screen backdrop.
+- The backdrop rules are heuristics (bottom-most picture, layout-native size). A 2D screen built some other way would
+  stay boxed over whatever is under it.
+- Merging with the `vr` branch needs care in `exec.c` (both edit the draw path).
+
+**Ultrawide, test switches:**
+
+- `LARECOMP_WINDOW_SHOTS=<frame>,...`: the real window, not the game texture, to `build/frames/window_NNNNN.png`.
+- `LARECOMP_ASPECT_AT=<frame>:<unlocked|original>,...` and `LARECOMP_RES_AT=<frame>:<match|dynamic|1..4>,...`: the
+  setting changed at those frames, as the menu would.
+- `LARECOMP_LOG_UIPANE=1`: how each 2D draw is placed. `LARECOMP_LOG_WIDE=1`: which draws are widened and how. Use
+  either with `LARECOMP_DEBUG_FRAME`, and with `LARECOMP_RENDER_THREAD=0` so the debug frame's draws are logged.
+- `LARECOMP_WIDE_NOCAM=1`: the targets widen but not the frustum (a stretched picture, for comparison).
+
+**Ultrawide, files:**
+
+- `runtime/hle/widescreen.c` (new: the widescreen hooks, out of `game_hooks.c`)
+- `runtime/hle/game_hooks.c` (the stubs moved out)
+- `runtime/nvn/maxwell/translate.c` and `runtime/nvn/maxwell/shader.h` (the clip scale and `cb3_rows`). These change
+  the translator id, so shaders are re-prepared once.
+- `runtime/nvn/vulkan/exec.c` (the widening, the camera-block and copy patches, the UI canvas, the pane rules)
+- `runtime/nvn/vulkan/device.c` (window shots)
+- `runtime/ui/menu.mm` (the option's help text)
+- `runtime/settings.c` (a comment)
+
+With the Rearmed art and the frame rate counter, at 3440x1440 Unlocked (Match and 2x): the Rearmed splash, the
+intro logo with its tag and the title sit in the 16:9 box with black bars, nothing clipped; character select fills the
+window; the counter keeps to the window's top right.
+
+**Build (Windows):** MSYS2 puts `vk_mem_alloc.h` in `include/vma/`; the Makefile adds that folder when it's there.
+README: the package list names `mingw-w64-ucrt-x86_64-sdl3` (lower case, as MSYS2 has it now) and adds
+`mingw-w64-ucrt-x86_64-vulkan-memory-allocator`.
+
+**Debugging switches added:**
+- `LARECOMP_DUMP_TEX=<w>x<h>`: level 0 of each texture of that size, linear, as it is uploaded, to
+  `build/texdump/<address>_<w>x<h>_f<format>.bin` (how the button-icon font sheet below was found).
+- `LARECOMP_LOG_PASS_MISMATCH=1`: each pass whose attachments differ in size, or whose image isn't its guest size
+  times its scale, once per combination (how the scaling bug above was found).
+
 What this project changed relative to [LAS Recomp](https://github.com/peiikai/LASRecomp) (its recompiler and Switch
 runtime), why, and where. It also lists the debugging switches, the test routes, the known gaps and the next steps.
 It started as DOAX3 Recomp (the sections from "Project setup" to "Test routes" are that work, which MUA3 inherits:

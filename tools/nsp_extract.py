@@ -403,7 +403,7 @@ def check_copy(a, base, upd):
         sec = {s.idx: s for s in (upd or base)['program'].sections}[0]
         main = [(off, size) for name, off, size in pfs0_entries(sec.read, sec.data_off) if name == 'main']
         build = sec.read(main[0][0] + 0x40, 0x20).hex() if main else ''
-        if not build.startswith(a.build.lower()):
+        if not any(build.startswith(b.strip()) for b in a.build.lower().split(',') if b.strip()):
             refuse(f'This is another version of the game: {a.want} is needed, '
                      + ('and the update given is a different one.' if upd else 'with its update (none was given).'))
 
@@ -420,8 +420,13 @@ def main():
                     help='source (default): write <outdir>/romfs.src, the RomFS read in place from the NSPs; '
                          'extract: copy every file out to <outdir>/romfs')
     ap.add_argument('--files', help='also copy out the RomFS files whose path contains this text')
+    ap.add_argument('--branding', action='store_true',
+                    help="also make ARMS Rearmed's logo & splash art from these files (tools/branding.py: "
+                         '<outdir>/branding; needs Pillow)')
+    ap.add_argument('--port-version', default='0.1.0', help="ARMS Rearmed's version, for the splash (--branding)")
     ap.add_argument('--title', help="the game's title ID (hex): any other game is refused, with a one-line reason")
-    ap.add_argument('--build', help="the start of exefs/main's build ID (hex): any other version is refused")
+    ap.add_argument('--build', help="the start of exefs/main's build ID (hex; several, comma separated): any other "
+                                    "version is refused")
     ap.add_argument('--want', default='the game', help='what --title and --build name, for those messages: "ARMS 5.4.0"')
     a = ap.parse_args()
     keys = load_keys(a.keys)
@@ -471,6 +476,13 @@ def main():
                 out = os.path.join(a.outdir, 'aoc', f'{ncas[kind].program_id:016x}.romfs')
                 copy_out(d.read, d.data_off, image, out)
                 print(f' aoc: {out} {image:,} bytes, ' + ', '.join(p for p, _, _ in romfs_files(d)))
+    if a.branding:  # (after control/: the splash names the game's version) - a failure here never fails the setup
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (python -I leaves the script's folder out)
+            import branding
+            branding.build(romfs, files, a.outdir, a.port_version)
+        except Exception as e:  # noqa: BLE001
+            print(f' branding: not made ({type(e).__name__}: {e}); the game keeps its own logo and splash')
 
 
 if __name__ == '__main__':

@@ -33,7 +33,7 @@
     },
     {
       "id": "update",
-      "label": "The ARMS 5.4.0 update (NSP) from your own Switch. Keep both files where they are: the game reads its data from them.",
+      "label": "The ARMS 5.4.0 or 5.5.1 update (NSP) from your own Switch. Keep both files where they are: the game reads its data from them.",
       "role": "update",
       "formats": [
         {
@@ -89,6 +89,7 @@
         "antialias": "off",
         "aspect": "original",
         "show_fps": "0",
+        "rearmed_art": "1",
         "volume": "1.00",
         "rumble": "1",
         "background_input": "0"
@@ -150,6 +151,29 @@
       ],
       "defaults": {
         "aspect": "original"
+      }
+    },
+    {
+      "id": "rearmed_art",
+      "label": "Rearmed logo & splash art",
+      "group": "Display",
+      "help": "ARMS Rearmed's own start screen and a REARMED tag on the logo, drawn from your game files. Off shows the game's originals.",
+      "choices": [
+        {
+          "label": "On",
+          "set": {
+            "rearmed_art": "1"
+          }
+        },
+        {
+          "label": "Off",
+          "set": {
+            "rearmed_art": "0"
+          }
+        }
+      ],
+      "defaults": {
+        "rearmed_art": "1"
       }
     },
     {
@@ -276,9 +300,15 @@
           }
         },
         {
-          "label": "On",
+          "label": "Simple",
           "set": {
             "show_fps": "1"
+          }
+        },
+        {
+          "label": "Advanced (frame and GPU times, sizes, graph)",
+          "set": {
+            "show_fps": "2"
           }
         }
       ],

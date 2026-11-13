@@ -13,7 +13,8 @@ enum { UPSCALE_BILINEAR = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /
 #define UPSCALE_SHARP UPSCALE_FSR1
 #endif
 enum { AA_OFF = 0, AA_SMAA = 1 };
-enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3 };
+enum { FPS_OFF = 0, FPS_SIMPLE = 1, FPS_ADVANCED = 2 };  // the frame rate counter: the rate, or the rate and its details
+enum { PROMPTS_AUTO = 0, PROMPTS_NINTENDO = 1, PROMPTS_XBOX = 2, PROMPTS_PLAYSTATION = 3, PROMPTS_KEYBOARD = 4 };
 // Which face button confirms in our own menus (runtime/ui/pad_nav.mm); the game's input is never affected
 enum { MENU_CONFIRM_GAME = 0, MENU_CONFIRM_CONTROLLER = 1 };
 enum { TIMER_POS_LEFT = 0, TIMER_POS_RIGHT = 1 };  // the run timer's corner (bottom left / right)
@@ -38,7 +39,7 @@ typedef struct {
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
-    bool show_fps;
+    int show_fps;        // FPS_*: the frame rate counter (runtime/ui/menu.mm fps_overlay_draw); larecomp.ini 0 / 1 / 2
     int frame_rate;      // 30, 60 or 120 fps: the display period and the game's time step follow it (runtime/hle/vi.c)
     bool dpad_move;      // the d-pad (and arrow keys) move Link like the stick
     bool rumble;         // controller vibration from the game (runtime/hle/input.c)
@@ -48,6 +49,7 @@ typedef struct {
     bool move_360;       // analog movement in any direction (the game snaps the stick to 8): runtime/hle/qol.c
     bool blur_removal;   // no tilt-shift blur at the top / bottom of the screen
     bool hide_hero_icon; // no Hero Mode icon on the HUD
+    bool rearmed_art;    // ARMS Rearmed's boot splash and logo tags (tools/branding.py; runtime/nvn/texpatch.c)
     bool mirror_mode;    // the world mirrored left to right (Gameplay tab): renderers + runtime/hle/input.c
     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
     int prompts;         // PROMPTS_*: button glyphs (auto = follow the controller SDL reports): runtime/nvn/texpatch.c

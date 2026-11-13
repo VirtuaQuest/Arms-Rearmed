@@ -181,6 +181,7 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     }
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
+    if (!dyn && idx == 3 && off >= 0 && (off >> 4) < 64) c->info->cb3_rows |= 1ull << (off >> 4);
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
     if (dyn) sprintf(buf, "cbr(cb%d, (%s) + %lldu)", idx, dyn, (long long)off);
     else sprintf(buf, "cb%d[%lld][%lld]", idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
@@ -2564,6 +2565,10 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
            key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width)
         info->uses_rscale = true;
     }
+    if (stage == STAGE_VERTEX) {  // widescreen: rscale[0].xy scales the clip position (1, 1 but for a widened scene)
+        sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[1]; };\n", set);
+        info->uses_rscale = true;
+    }
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
         sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[4]; };\n", set);
@@ -2650,6 +2655,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     free(body.buf);
     if (stage == STAGE_VERTEX) {
+        // (widescreen, runtime/hle/widescreen.c: a scene camera's frustum widened after the game's own transform, so
+        // the shader's other uses of its projection - lighting, screen lookups - see the game's values)
+        sp(&s, "  gl_Position.xy *= rscale[0].xy;\n");
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->flip_x) sp(&s, "  gl_Position.x = -gl_Position.x;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");

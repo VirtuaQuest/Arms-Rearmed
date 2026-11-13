@@ -18,10 +18,14 @@ a = Analysis(
     [os.path.join(TOOLS, 'armsgen.py')],
     pathex=[TOOLS],
     binaries=collect_dynamic_libs('capstone') + collect_dynamic_libs('unicorn') + [(p, 'unicorn/lib') for p in _uc_libs],
-    datas=[],
-    hiddenimports=collect_submodules('unicorn') + ['gen', 'nsp_extract', 'lz4.block', 'Crypto.Cipher.AES'],
+    # (extract --branding: tools/branding.py draws the Rearmed logo & splash art with Pillow, from the game's files and
+    # Kenney's CC0 device outlines)
+    datas=[(os.path.join(TOOLS, '..', 'third_party', 'kenney_input_prompts', '*.svg'), 'kenney_input_prompts'),
+           (os.path.join(TOOLS, '..', 'third_party', 'kenney_input_prompts', 'License.txt'), 'kenney_input_prompts')],
+    hiddenimports=collect_submodules('unicorn') + ['gen', 'nsp_extract', 'branding', 'lz4.block', 'Crypto.Cipher.AES',
+                                                   'PIL.Image', 'PIL.DdsImagePlugin'],
     excludes=['tkinter', 'pydoc', 'doctest', 'unittest', 'pdb', 'IPython', 'numpy', 'setuptools', '_distutils_hack',
-              'pkg_resources', 'ssl', '_ssl', '_hashlib', '_decimal', 'PIL'],
+              'pkg_resources', 'ssl', '_ssl', '_hashlib', '_decimal'],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

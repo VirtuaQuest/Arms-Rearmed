@@ -1,6 +1,7 @@
 """The release's game code tools in one program, frozen by PyInstaller (tools/armsgen.spec), so a player needs no Python:
 
     armsgen extract <game.xci|nsp> <prod.keys> <outdir> [--update <update.nsp>]   = tools/nsp_extract.py
+                                         (--branding: also tools/branding.py, the Rearmed logo & splash art)
     armsgen gen <name> <nso> <base> <outdir> [--hle ...] [--simd c]                = tools/gen.py
 
 The prepare step (launcher/launcher.cpp, `armslauncher --prepare`) runs both on the player's own game files.

@@ -926,6 +926,7 @@ uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
+double g_vk_gpu_ms = -1;  // the GPU time of the last frame (the game's work and the window image), -1 before it's known
 uint64_t renderer_present_count(void) { return total_frames; }  // (the game thread's frame: the HLE hooks')
 // The frame whose work is being translated (rqueue.h rq_frame): "once per frame" state of the translation. Without the
 // render thread, total_frames.
@@ -1014,6 +1015,8 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
             if (sp_have) {
                 double game = (sp[0] - sp_prev[0]) / 1e6, win = (sp[1] - sp_prev[1]) / 1e6;
                 game_ms = game, win_ms = count_present ? win : -1;
+                extern double g_vk_gpu_ms;  // (the frame rate counter's details: runtime/ui/menu.mm)
+                g_vk_gpu_ms = game + (win > 0 ? win : 0);
                 double slotw = (wt[0] - wt_prev[0]) / 1e6;
                 DynSplit ds = {game, win, (sp[2] - sp_prev[2]) / 1e6, (double)(sp[3] - sp_prev[3]), slotw,
                                (wt[1] - wt_prev[1]) / 1e6, (wt[2] - wt_prev[2]) / 1e6,
@@ -1061,7 +1064,21 @@ void backend_present_now(NvnTexture *t, uint64_t frame) {
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)frame + 1 == win_shot;
-        vk_frame_end(shot ? "build/window.png" : NULL);
+        // LARECOMP_WINDOW_SHOTS=<frame>,<frame>,...: the window image (what the player sees) at those frames ->
+        // build/frames/window_N.png
+        static char win_path[96];
+        const char *wsl = getenv("LARECOMP_WINDOW_SHOTS");
+        for (const char *p = wsl; p && *p && !shot;) {
+            long at = strtol(p, (char **)&p, 10);
+            if ((long)frame + 1 == at) {
+                mkdir("build/frames", 0755);
+                snprintf(win_path, sizeof win_path, "build/frames/window_%05ld.png", at);
+                shot = true;
+            }
+            if (*p == ',') p++; else break;
+        }
+        vk_frame_end(shot ? (win_path[0] && wsl ? win_path : "build/window.png") : NULL);
+        win_path[0] = 0;
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) exit_after_shot();
     } else {
         renderer_submit();
@@ -1317,6 +1334,11 @@ void ui_window_init(void) {
     }
     window = SDL_CreateWindow("ARMS Rearmed", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+    {   // (tests) LARECOMP_WINDOW_POS=x,y: the window's top left on the desktop (a test on another screen)
+        int wx, wy;
+        if (getenv("LARECOMP_WINDOW_POS") && sscanf(getenv("LARECOMP_WINDOW_POS"), "%d,%d", &wx, &wy) == 2)
+            SDL_SetWindowPosition(window, wx, wy);
+    }
     rt_window_icon(window);
     // the window mode applies from the start (not only once the game runs); test windows stay windows
     if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) ui_apply_window_mode(window);
