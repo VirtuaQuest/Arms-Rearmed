@@ -190,7 +190,8 @@ static const Choice k_render[] = {{"Match display", "match"}, {"1x (1080p)", "1x
 static const Choice k_upscaler[] = {{"Auto", "auto"}, {"AMD FSR 1 (sharp)", "fsr1"}, {"Bilinear (soft)", "bilinear"}};
 static const Choice k_aa[] = {{"Off", "off"}, {"SMAA", "smaa"}};
 static const Choice k_fps_modes[] = {{"Off", "0"}, {"Simple (the rate)", "1"}, {"Advanced (times, sizes, graph)", "2"}};
-static const Choice k_aspect[] = {{"Original 16:9 (bars on wider screens)", "original"}, {"Stretch to the window", "unlocked"}};
+static const Choice k_aspect[] = {{"Original 16:9 (bars on wider screens)", "original"},
+                                  {"Unlocked (ultrawide: a wider view, nothing stretched)", "unlocked"}};
 static int choice_index(const Choice *c, int n, const std::string &v) {
     for (int i = 0; i < n; i++) if (v == c[i].value) return i;
     return 0;
@@ -977,6 +978,9 @@ static void page_play(void) {
     const char *modes[] = {"Windowed", "Borderless fullscreen", "Exclusive fullscreen"};
     ImGui::SetNextItemWidth(320 * g_scale);
     ImGui::Combo("##mode_play", &s_mode, modes, 3);
+    row_label("Aspect ratio", lw);
+    ImGui::SetNextItemWidth(320 * g_scale);
+    combo("##aspect_play", &s_aspect, k_aspect, IM_ARRAYSIZE(k_aspect));
     row_label("Frame rate counter", lw);
     combo("##fps_play", &s_show_fps, k_fps_modes, 3);
     row_label("Rearmed logo & splash art", lw);
